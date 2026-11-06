@@ -27,7 +27,7 @@ Write-Host "== Convertitore $v =="
 & $py -m PyInstaller "$qui\app.py" --name Convertitore --noconfirm --windowed --onedir --log-level WARN `
     --icon "$qui\convertitore.ico" --add-data "$qui\convertitore.ico;." `
     --collect-all tkinterdnd2 --collect-all pillow_heif `
-    --hidden-import win32com.client --hidden-import pythoncom --hidden-import aggiornamento `
+    --hidden-import win32com.client --hidden-import pythoncom --hidden-import aggiornamento --hidden-import pdf2docx --exclude-module fire `
     --distpath "$qui\dist" --workpath "$lavoro\work" --specpath "$lavoro"
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller non e' riuscito" }
 Copy-Item (Get-Command ffmpeg).Source "$qui\dist\Convertitore\ffmpeg.exe" -Force
@@ -48,7 +48,9 @@ Get-ChildItem "$qui\installatore" -Include "Convertitore-*.exe", "versione.json"
 # 4. pubblicazione su GitHub (la sfera scarica sempre dall'ultima release)
 if ($Pubblica) {
     $testo = if ($Note) { $Note } else { "Convertitore $v" }
-    gh release create "v$v" "$qui\installatore\Convertitore-Setup.exe" "$qui\installatore\Convertitore-Aggiornamento.exe" `
+    $gh = (Get-Command gh -ErrorAction SilentlyContinue).Source
+    if (-not $gh) { $gh = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GitHub.cli_*\bin\gh.exe" | Select-Object -First 1).FullName }
+    & $gh release create "v$v" "$qui\installatore\Convertitore-Setup.exe" "$qui\installatore\Convertitore-Aggiornamento.exe" `
         "$qui\installatore\versione.json" --repo torregiulia/convertitore --title "Convertitore $v" --notes $testo
     if ($LASTEXITCODE -ne 0) { throw "Pubblicazione su GitHub non riuscita" }
     Write-Host "Pubblicata: https://github.com/torregiulia/convertitore/releases/tag/v$v"

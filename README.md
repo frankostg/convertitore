@@ -4,6 +4,8 @@ Convertitore di file per Windows con una **ruota delle conversioni**: trascini u
 
 - **Sfera**: piccolo cerchio sempre a portata. Ci trascini sopra i file, oppure la clicchi con un file selezionato, e si apre la ruota.
 - **Tasto destro → Converti…** su immagini, video, audio, PDF, Word, Excel e PowerPoint.
+- **Ctrl+Alt+C** sul file selezionato apre la ruota; con uno screenshot negli appunti, clic sulla sfera → fetta **Appunti**.
+- Oltre ai formati: **Leggero** (meno MB), **Misura** (50%, 1920 px, quadrata), **Ruota** foto e PDF, **PDF → Word**, **Unisci** foto e PDF in un solo PDF.
 - **Aggiornamenti automatici**: la sfera controlla questa pagina Releases e si aggiorna da sola.
 
 ## Installazione

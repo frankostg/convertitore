@@ -4,7 +4,9 @@ Trascini uno o piu' file sopra la sfera -> si apre subito la ruota delle convers
 - trascina la sfera col mouse per spostarla (la posizione viene ricordata)
 - clic semplice: ruota per i file selezionati in Esplora file o sul Desktop
   (se non c'e' niente di selezionato apre la ruota con tutte le conversioni possibili)
+- Ctrl+Alt+C ovunque: come il clic, senza toccare la sfera
 - tasto destro: menu (apri, nascondi 30 minuti, esci)
+- dopo un aggiornamento mostra per qualche secondo cosa c'e' di nuovo
 Parte da sola all'avvio di Windows (collegamento in Esecuzione automatica).
 """
 import ctypes
@@ -12,12 +14,13 @@ import ctypes.wintypes as wt
 import json
 import math
 import os
+import queue
 import subprocess
 import sys
 import threading
 import tkinter as tk
 
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 QUI = os.path.dirname(os.path.abspath(__file__))
@@ -27,7 +30,7 @@ SCRIPT = os.path.join(QUI, "convertitore.py")
 # comando per aprire la ruota: l'exe installato, oppure Python + script
 COMANDO = [sys.executable] if FROZEN else [PYW, SCRIPT]
 sys.path.insert(0, QUI)
-from versione import VERSIONE  # noqa: E402
+from versione import NOVITA, VERSIONE  # noqa: E402
 from convertitore import CATEGORIE  # noqa: E402
 
 ESTENSIONI = {e for exts in CATEGORIE.values() for e in exts}
@@ -146,6 +149,8 @@ def disegna_su_schermo(hwnd, dati, lato, opacita):
 
 
 _u32.GetForegroundWindow.restype = wt.HWND
+_u32.RegisterHotKey.argtypes = [wt.HWND, ctypes.c_int, wt.UINT, wt.UINT]
+_u32.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT]
 
 
 def file_selezionati(hwnd):
@@ -174,6 +179,71 @@ def file_selezionati(hwnd):
         return [it.Path for it in items if os.path.isfile(it.Path)]
     except Exception:
         return []
+
+
+def leggi_config():
+    try:
+        with open(CONFIG, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def scrivi_config(**valori):
+    dati = leggi_config()
+    dati.update(valori)
+    try:
+        os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+        with open(CONFIG, "w", encoding="utf-8") as fh:
+            json.dump(dati, fh)
+    except OSError:
+        pass
+
+
+def ascolta_scorciatoia(coda):
+    """Thread: registra Ctrl+Alt+C per tutto Windows e avvisa la sfera quando viene premuto."""
+    msg = wt.MSG()
+    if not _u32.RegisterHotKey(None, 1, 0x0002 | 0x0001 | 0x4000, ord("C")):  # CTRL | ALT | NOREPEAT
+        return  # gia' usata da un altro programma: pazienza, resta il clic sulla sfera
+    while _u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        if msg.message == 0x0312:  # WM_HOTKEY
+            coda.put(_u32.GetForegroundWindow())
+
+
+def disegna_avviso(titolo, righe):
+    """Cartoncino scuro con le novita' dopo un aggiornamento."""
+    S = 2
+    f_t = ImageFont.truetype(r"C:\Windows\Fonts\segoeuib.ttf", int(14 * Z * S))
+    f_r = ImageFont.truetype(r"C:\Windows\Fonts\segoeui.ttf", int(12 * Z * S))
+    larg = int(300 * Z * S)
+    pad = int(16 * Z * S)
+    # a capo automatico
+    misura = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    linee = []
+    for r in righe:
+        parole, riga = r.split(" "), "•  "
+        for p in parole:
+            prova = (riga + " " + p) if riga.strip() not in ("", "•") else riga + p
+            if misura.textlength(prova, font=f_r) > larg - 2 * pad and riga.strip():
+                linee.append(riga)
+                riga = "    " + p
+            else:
+                riga = prova
+        linee.append(riga)
+    alt_r = int(18 * Z * S)
+    alt = pad * 2 + int(22 * Z * S) + alt_r * len(linee) + int(24 * Z * S)
+    img = Image.new("RGBA", (larg, alt), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, larg - 1, alt - 1], radius=int(14 * Z * S), fill=(12, 15, 26, 245),
+                        outline=(70, 90, 150, 255), width=S)
+    x, y = pad, pad
+    d.text((x, y), titolo, font=f_t, fill=(134, 239, 172, 255))
+    y += int(26 * Z * S)
+    for l in linee:
+        d.text((x, y), l, font=f_r, fill=(214, 222, 245, 255))
+        y += alt_r
+    d.text((x, alt - pad), "clic per chiudere", font=f_r, fill=(110, 122, 160, 255), anchor="ls")
+    return img.resize((larg // S, alt // S), Image.LANCZOS)
 
 
 def una_sola_istanza():
@@ -228,6 +298,77 @@ class Sfera:
         self.occupata = False
         self.pronto = None
         self.root.after(20_000, self._cerca_aggiornamenti)
+        # scorciatoia Ctrl+Alt+C
+        self.coda = queue.Queue()
+        threading.Thread(target=ascolta_scorciatoia, args=(self.coda,), daemon=True).start()
+        self._controlla_scorciatoia()
+        # appena aggiornata: mostra le novita'
+        if leggi_config().get("vista") != VERSIONE:
+            scrivi_config(vista=VERSIONE)
+            if FROZEN or os.environ.get("CONVERTITORE_AVVISO"):
+                self.root.after(2500, self._avviso)
+
+    # -- scorciatoia
+    def _controlla_scorciatoia(self):
+        try:
+            while True:
+                finestra = self.coda.get_nowait()
+                if not self.occupata:
+                    files = [f for f in file_selezionati(finestra)
+                             if os.path.splitext(f)[1].lower().lstrip(".") in ESTENSIONI]
+                    self._lancia(files or ["--ruota"])
+        except queue.Empty:
+            pass
+        self.root.after(150, self._controlla_scorciatoia)
+
+    # -- avviso novita'
+    def _avviso(self):
+        import strati
+        img = disegna_avviso(f"Convertitore aggiornato a {VERSIONE}", NOVITA)
+        w, h = img.size
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)
+        top.attributes("-topmost", True)
+        # accanto alla sfera, verso il centro dello schermo
+        sx, sy = self.root.winfo_x(), self.root.winfo_y()
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        x = sx - w - int(6 * Z) if sx > sw / 2 else sx + self.lato + int(6 * Z)
+        y = min(max(sy, int(8 * Z)), sh - h - int(56 * Z))
+        top.geometry(f"{w}x{h}+{x}+{y}")
+        hwnd = strati.rendi_a_strati(top)
+        dati = strati.premoltiplica(img)
+
+        def dissolvi(a, passo):
+            try:
+                a = max(0.0, min(1.0, a + passo))
+                strati.disegna(hwnd, img, a, dati)
+                if (passo > 0 and a < 1) or (passo < 0 and a > 0):
+                    top.after(16, lambda: dissolvi(a, passo))
+                elif passo < 0:
+                    top.destroy()
+            except tk.TclError:
+                pass
+
+        def chiudi(_e=None):
+            if getattr(top, "_chiusura", False):
+                return
+            top._chiusura = True
+            dissolvi(1.0, -0.12)
+
+        def dopo():
+            # resta finche' il mouse ci sta sopra
+            try:
+                px, py = top.winfo_pointerxy()
+                if x <= px <= x + w and y <= py <= y + h:
+                    top.after(1000, dopo)
+                else:
+                    chiudi()
+            except tk.TclError:
+                pass
+
+        top.bind("<Button-1>", chiudi)
+        dissolvi(0.0, 0.12)
+        top.after(14_000, dopo)
 
     # -- aggiornamenti online
     def _cerca_aggiornamenti(self):
@@ -259,8 +400,7 @@ class Sfera:
     def _posizione(self):
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         try:
-            with open(CONFIG, encoding="utf-8") as fh:
-                p = json.load(fh)
+            p = leggi_config()
             x, y = int(p["x"]), int(p["y"])
             if 0 <= x <= sw - 20 and 0 <= y <= sh - 20:
                 return x, y
@@ -270,12 +410,7 @@ class Sfera:
         return sw - self.lato - int(2 * Z), int(sh * 0.42)
 
     def _salva(self):
-        try:
-            os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
-            with open(CONFIG, "w", encoding="utf-8") as fh:
-                json.dump({"x": self.root.winfo_x(), "y": self.root.winfo_y()}, fh)
-        except OSError:
-            pass
+        scrivi_config(x=self.root.winfo_x(), y=self.root.winfo_y())
 
     # -- aspetto
     def _attiva(self):
