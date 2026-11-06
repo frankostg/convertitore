@@ -1,0 +1,6 @@
+# file generati: si ricreano con crea_versione.ps1
+dist/
+installatore/
+__pycache__/
+build/
+*.spec
