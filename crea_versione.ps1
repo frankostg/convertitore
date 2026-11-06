@@ -52,7 +52,7 @@ if ($Pubblica) {
     $gh = (Get-Command gh -ErrorAction SilentlyContinue).Source
     if (-not $gh) { $gh = (Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\GitHub.cli_*\bin\gh.exe" | Select-Object -First 1).FullName }
     & $gh release create "v$v" "$qui\installatore\Convertitore-Setup.exe" "$qui\installatore\Convertitore-Aggiornamento.exe" `
-        "$qui\installatore\versione.json" --repo torregiulia/convertitore --title "Convertitore $v" --notes $testo
+        "$qui\installatore\versione.json" --repo frankostg/convertitore --title "Convertitore $v" --notes $testo
     if ($LASTEXITCODE -ne 0) { throw "Pubblicazione su GitHub non riuscita" }
-    Write-Host "Pubblicata: https://github.com/torregiulia/convertitore/releases/tag/v$v"
+    Write-Host "Pubblicata: https://github.com/frankostg/convertitore/releases/tag/v$v"
 }
