@@ -18,6 +18,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
@@ -45,46 +46,59 @@ except Exception:
 LATO = 72          # finestra (logica), la sfera sta al centro
 R_RIPOSO = 14      # raggio a riposo: piccola e discreta
 R_ATTIVA = 30      # raggio quando ci passa sopra un file
-FOTOGRAMMI = 8     # passi dell'animazione di ingrandimento
-ALPHA_RIPOSO = 0.55
+FOTOGRAMMI = 16    # passi dell'animazione di ingrandimento
+DURATA = 0.18      # secondi per ingrandirsi / tornare piccola
+ALPHA_RIPOSO = 0.6
 KEYHEX = "#010203"  # sfondo della finestra Tk (non si vede: la disegna Windows)
-COLORI = [(34, 211, 238), (232, 121, 249), (163, 230, 53), (251, 146, 60), (96, 165, 250), (52, 211, 153)]
+ACC = (89, 220, 255)
+COLORI = [(89, 220, 255), (183, 156, 255), (109, 255, 176), (255, 181, 71), (96, 150, 255), (255, 110, 120)]
 
 
 def disegna(t=0.0):
-    """t = 0 a riposo (piccola, grigia, discreta) -> 1 quando ci passa sopra un file."""
+    """t = 0 a riposo (piccola, discreta) -> 1 quando ci passa sopra un file.
+    Stile sala comandi: nucleo scuro, anello sottile azzurro, tacche, frecce di conversione."""
     S = 4
     n = int(LATO * Z) * S
     c = n / 2
     img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
     u = Z * S
     r = (R_RIPOSO + (R_ATTIVA - R_RIPOSO) * t) * u
-    # disco scuro con bordo sottile
-    d.ellipse([c - r, c - r, c + r, c + r], fill=(16, 18, 26, 255))
-    grigio = (96, 104, 124)
-    d.ellipse([c - r, c - r, c + r, c + r], outline=grigio + (255,), width=max(1, int(1.2 * u)))
-    # anello sottile di colori che compare solo da attiva
+    # alone azzurro che cresce da attiva
     if t > 0:
-        r1, r2 = r - 4.5 * u, r - 2 * u
+        from PIL import ImageFilter
+        alone = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+        ImageDraw.Draw(alone).ellipse([c - r, c - r, c + r, c + r], fill=ACC + (int(120 * t),))
+        img.alpha_composite(alone.filter(ImageFilter.GaussianBlur(5 * u)))
+    d = ImageDraw.Draw(img)
+    d.ellipse([c - r, c - r, c + r, c + r], fill=(3, 16, 28, 255))
+    d.ellipse([c - r, c - r, c + r, c + r], outline=ACC + (int(150 + 105 * t),), width=max(1, int(1.2 * u)))
+    # tacche interne (4 a riposo, 24 da attiva)
+    tacche = 4 if t < 0.5 else 24
+    for k in range(tacche):
+        a = math.radians(k * 360 / tacche - 90)
+        r1, r2 = r - (2.2 + 1.2 * t) * u, r - (4.0 + 1.8 * t) * u
+        d.line([c + r1 * math.cos(a), c + r1 * math.sin(a), c + r2 * math.cos(a), c + r2 * math.sin(a)],
+               fill=ACC + (int(110 + 80 * t),), width=max(1, int(1.0 * u)))
+    # anello di colori dei tipi di file, solo da attiva
+    if t > 0:
+        r1, r2 = r - 7.5 * u, r - 6.0 * u
         for i, col in enumerate(COLORI):
-            a0 = -90 + i * 60 + 5
-            a1 = a0 + 50
+            a0 = -90 + i * 60 + 6
+            a1 = a0 + 48
             pts = [(c + r2 * math.cos(math.radians(a0 + (a1 - a0) * k / 20)), c + r2 * math.sin(math.radians(a0 + (a1 - a0) * k / 20))) for k in range(21)]
             pts += [(c + r1 * math.cos(math.radians(a0 + (a1 - a0) * k / 20)), c + r1 * math.sin(math.radians(a0 + (a1 - a0) * k / 20))) for k in range(20, -1, -1)]
-            mix = tuple(int(16 + (v - 16) * t) for v in col)
-            d.polygon(pts, fill=mix + (255,))
-    # simbolo: due frecce circolari sottili
-    chiaro = tuple(int(150 + (235 - 150) * t) for v in range(3))
-    ra = r * (0.42 if t == 0 else 0.42 - 0.08 * t)
-    w = max(2, int((1.6 + 0.8 * t) * u))
+            d.polygon(pts, fill=col + (int(255 * t),))
+    # frecce di conversione
+    chiaro = tuple(int(v + (255 - v) * t * 0.6) for v in (150, 225, 250))
+    ra = r * (0.40 - 0.06 * t)
+    w = max(2, int((1.5 + 0.6 * t) * u))
     d.arc([c - ra, c - ra, c + ra, c + ra], 205, 335, fill=chiaro + (255,), width=w)
     d.arc([c - ra, c - ra, c + ra, c + ra], 25, 155, fill=chiaro + (255,), width=w)
     for ang in (335, 155):
         a = math.radians(ang)
         x, y = c + ra * math.cos(a), c + ra * math.sin(a)
         tg = a + math.pi / 2
-        p = ra * 0.38
+        p = ra * 0.4
         d.polygon([(x + p * 1.1 * math.cos(tg), y + p * 1.1 * math.sin(tg)),
                    (x + p * 0.75 * math.cos(a), y + p * 0.75 * math.sin(a)),
                    (x - p * 0.75 * math.cos(a), y - p * 0.75 * math.sin(a))], fill=chiaro + (255,))
@@ -211,38 +225,52 @@ def ascolta_scorciatoia(coda):
 
 
 def disegna_avviso(titolo, righe):
-    """Cartoncino scuro con le novita' dopo un aggiornamento."""
+    """Pannello con le novita' dopo un aggiornamento (angoli smussati, linee azzurre)."""
     S = 2
-    f_t = ImageFont.truetype(r"C:\Windows\Fonts\segoeuib.ttf", int(14 * Z * S))
-    f_r = ImageFont.truetype(r"C:\Windows\Fonts\segoeui.ttf", int(12 * Z * S))
-    larg = int(300 * Z * S)
-    pad = int(16 * Z * S)
-    # a capo automatico
+    f_t = ImageFont.truetype(r"C:\Windows\Fonts\bahnschrift.ttf", int(15 * Z * S))
+    f_r = ImageFont.truetype(r"C:\Windows\Fonts\bahnschrift.ttf", int(12.5 * Z * S))
+    f_m = ImageFont.truetype(r"C:\Windows\Fonts\consola.ttf", int(10 * Z * S))
+    try:
+        f_t.set_variation_by_name("SemiBold")
+        f_r.set_variation_by_name("Regular")
+    except Exception:
+        pass
+    larg = int(320 * Z * S)
+    pad = int(18 * Z * S)
     misura = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    linee = []
+    linee = []  # (testo, prima riga della voce?)
     for r in righe:
-        parole, riga = r.split(" "), "•  "
-        for p in parole:
-            prova = (riga + " " + p) if riga.strip() not in ("", "•") else riga + p
-            if misura.textlength(prova, font=f_r) > larg - 2 * pad and riga.strip():
-                linee.append(riga)
-                riga = "    " + p
+        riga, prima = "", True
+        for p in r.split(" "):
+            prova = (riga + " " + p).strip()
+            if riga and misura.textlength(prova, font=f_r) > larg - 2 * pad - 14 * Z * S:
+                linee.append((riga, prima))
+                riga, prima = p, False
             else:
                 riga = prova
-        linee.append(riga)
-    alt_r = int(18 * Z * S)
-    alt = pad * 2 + int(22 * Z * S) + alt_r * len(linee) + int(24 * Z * S)
+        linee.append((riga, prima))
+    alt_r = int(19 * Z * S)
+    alt = pad + int(44 * Z * S) + alt_r * len(linee) + int(30 * Z * S)
     img = Image.new("RGBA", (larg, alt), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([0, 0, larg - 1, alt - 1], radius=int(14 * Z * S), fill=(12, 15, 26, 245),
-                        outline=(70, 90, 150, 255), width=S)
+    t = int(12 * Z * S)  # angoli smussati
+    forma = [(t, 0), (larg - 1, 0), (larg - 1, alt - 1 - t), (larg - 1 - t, alt - 1), (0, alt - 1), (0, t)]
+    d.polygon(forma, fill=(4, 18, 31, 246))
+    d.line(forma + [forma[0]], fill=(89, 220, 255, 90), width=S)
+    # staffa luminosa nell'angolo in alto
+    d.line([(t, 0), (t + 40 * S, 0)], fill=(89, 220, 255, 255), width=2 * S)
+    d.line([(0, t), (0, t + 30 * S)], fill=(89, 220, 255, 255), width=2 * S)
     x, y = pad, pad
-    d.text((x, y), titolo, font=f_t, fill=(134, 239, 172, 255))
-    y += int(26 * Z * S)
-    for l in linee:
-        d.text((x, y), l, font=f_r, fill=(214, 222, 245, 255))
+    d.text((x, y), "AGGIORNAMENTO", font=f_m, fill=(89, 220, 255, 255))
+    y += int(16 * Z * S)
+    d.text((x, y), titolo, font=f_t, fill=(230, 247, 255, 255))
+    y += int(28 * Z * S)
+    for testo, prima in linee:
+        if prima:
+            d.rectangle([x, y + 7 * Z * S, x + 5 * Z * S, y + 12 * Z * S], fill=(89, 220, 255, 255))
+        d.text((x + 14 * Z * S, y), testo, font=f_r, fill=(214, 232, 243, 255))
         y += alt_r
-    d.text((x, alt - pad), "clic per chiudere", font=f_r, fill=(110, 122, 160, 255), anchor="ls")
+    d.text((x, alt - pad + 4 * S), "CLIC PER CHIUDERE", font=f_m, fill=(115, 151, 171, 255), anchor="ls")
     return img.resize((larg // S, alt // S), Image.LANCZOS)
 
 
@@ -266,6 +294,7 @@ class Sfera:
         self.cv.pack()
         self.frames = [premoltiplica(disegna(k / FOTOGRAMMI)) for k in range(FOTOGRAMMI + 1)]
         self.f, self.meta, self._anim = 0, 0, None
+        self.visibile = 1.0
         # finestra "a strati": Windows la disegna con l'immagine, con bordi sfumati veri
         root.update_idletasks()
         self.hwnd = _u32.GetParent(root.winfo_id())
@@ -420,28 +449,57 @@ class Sfera:
         self._vai(0)
 
     def _vai(self, meta):
-        """Anima dolcemente tra riposo e attiva."""
+        """Anima dolcemente tra riposo e attiva (a tempo: sempre fluida)."""
         self.meta = meta
+        self._t_ultimo = time.perf_counter()
         if self._anim is None:
             self._passo()
 
     def _passo(self):
-        if self.f == self.meta:
+        ora = time.perf_counter()
+        avanzo = (ora - self._t_ultimo) / DURATA * FOTOGRAMMI
+        self._t_ultimo = ora
+        self.pos = getattr(self, "pos", float(self.f))
+        if self.meta > self.pos:
+            self.pos = min(self.meta, self.pos + max(avanzo, 0.5))
+        else:
+            self.pos = max(self.meta, self.pos - max(avanzo, 0.5))
+        # curva morbida: veloce all'inizio, si posa piano
+        x = self.pos / FOTOGRAMMI
+        self.f = round(FOTOGRAMMI * (1 - (1 - x) ** 2) if self.meta else FOTOGRAMMI * x * x)
+        self._ridisegna()
+        if self.pos == self.meta:
             self._anim = None
             return
-        self.f += 1 if self.meta > self.f else -1
-        self._ridisegna()
-        self._anim = self.root.after(16, self._passo)
+        self._anim = self.root.after(8, self._passo)
 
     def _ridisegna(self):
         t = self.f / FOTOGRAMMI
-        disegna_su_schermo(self.hwnd, self.frames[self.f], self.lato, ALPHA_RIPOSO + (1 - ALPHA_RIPOSO) * t)
+        alfa = (ALPHA_RIPOSO + (1 - ALPHA_RIPOSO) * t) * self.visibile
+        disegna_su_schermo(self.hwnd, self.frames[self.f], self.lato, alfa)
+
+    def _sfuma(self, verso, poi=None):
+        """Fa comparire (+1) o sparire (-1) la sfera con una dissolvenza."""
+        t0 = time.perf_counter()
+
+        def passo():
+            t = min(1.0, (time.perf_counter() - t0) / 0.2)
+            self.visibile = t if verso > 0 else 1 - t
+            self._ridisegna()
+            if t < 1:
+                self.root.after(8, passo)
+            elif poi:
+                poi()
+        passo()
 
     def _mostra(self):
+        self.visibile = 0.0
+        self.f = self.meta = 0
+        self.pos = 0.0
+        self._ridisegna()
         self.root.deiconify()
         self.root.attributes("-topmost", True)
-        self.f = self.meta = 0
-        self._ridisegna()
+        self._sfuma(+1)
 
     def _tieni_sopra(self):
         try:
@@ -472,7 +530,7 @@ class Sfera:
         if files:
             self.occupata = True
             # mentre la ruota e' aperta la sfera si fa da parte, poi ricompare
-            self.root.after(700, self.root.withdraw)
+            self.root.after(250, lambda: self._sfuma(-1, self.root.withdraw))
             self._aspetta(proc)
 
     def _aspetta(self, proc):
