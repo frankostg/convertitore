@@ -43,55 +43,68 @@ try:
 except Exception:
     Z = 1.0
 
-LATO = 72          # finestra (logica), la sfera sta al centro
+LATO = 96          # finestra (logica), la sfera sta al centro (spazio per l'alone)
 R_RIPOSO = 14      # raggio a riposo: piccola e discreta
 R_ATTIVA = 30      # raggio quando ci passa sopra un file
 FOTOGRAMMI = 16    # passi dell'animazione di ingrandimento
 DURATA = 0.18      # secondi per ingrandirsi / tornare piccola
 ALPHA_RIPOSO = 0.6
 KEYHEX = "#010203"  # sfondo della finestra Tk (non si vede: la disegna Windows)
-ACC = (89, 220, 255)
-COLORI = [(89, 220, 255), (183, 156, 255), (109, 255, 176), (255, 181, 71), (96, 150, 255), (255, 110, 120)]
+ACC = (125, 211, 252)
+# colori dei tipi di file, in giro sull'anello (gli stessi della ruota)
+COLORI = [(56, 189, 248), (167, 139, 250), (251, 113, 133), (251, 146, 60), (163, 230, 53), (52, 211, 153)]
+
+
+def _mescola(c1, c2, t):
+    return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
+
+
+def _conico(k, n):
+    """Colore dell'anello sfumato nel punto k di n."""
+    x = (k / n) * len(COLORI)
+    i = int(x) % len(COLORI)
+    return _mescola(COLORI[i], COLORI[(i + 1) % len(COLORI)], x - int(x))
 
 
 def disegna(t=0.0):
     """t = 0 a riposo (piccola, discreta) -> 1 quando ci passa sopra un file.
-    Stile sala comandi: nucleo scuro, anello sottile azzurro, tacche, frecce di conversione."""
+    Disco di vetro scuro, anello sfumato con i colori dei tipi di file, frecce di conversione."""
+    from PIL import ImageFilter
     S = 4
     n = int(LATO * Z) * S
     c = n / 2
     img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
     u = Z * S
     r = (R_RIPOSO + (R_ATTIVA - R_RIPOSO) * t) * u
-    # alone azzurro che cresce da attiva
+    # ombra morbida e, da attiva, alone colorato
+    ombra = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    od = ImageDraw.Draw(ombra)
+    od.ellipse([c - r, c - r + 2 * u, c + r, c + r + 2 * u], fill=(0, 0, 0, 110))
     if t > 0:
-        from PIL import ImageFilter
-        alone = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-        ImageDraw.Draw(alone).ellipse([c - r, c - r, c + r, c + r], fill=ACC + (int(120 * t),))
-        img.alpha_composite(alone.filter(ImageFilter.GaussianBlur(5 * u)))
+        for k in range(36):
+            a0 = k * 10 - 90
+            od.arc([c - r, c - r, c + r, c + r], a0, a0 + 11, fill=_conico(k, 36) + (int(150 * t),), width=int(4 * u))
+    img.alpha_composite(ombra.filter(ImageFilter.GaussianBlur((2.5 + 3 * t) * u)))
     d = ImageDraw.Draw(img)
-    d.ellipse([c - r, c - r, c + r, c + r], fill=(3, 16, 28, 255))
-    d.ellipse([c - r, c - r, c + r, c + r], outline=ACC + (int(150 + 105 * t),), width=max(1, int(1.2 * u)))
-    # tacche interne (4 a riposo, 24 da attiva)
-    tacche = 4 if t < 0.5 else 24
-    for k in range(tacche):
-        a = math.radians(k * 360 / tacche - 90)
-        r1, r2 = r - (2.2 + 1.2 * t) * u, r - (4.0 + 1.8 * t) * u
-        d.line([c + r1 * math.cos(a), c + r1 * math.sin(a), c + r2 * math.cos(a), c + r2 * math.sin(a)],
-               fill=ACC + (int(110 + 80 * t),), width=max(1, int(1.0 * u)))
-    # anello di colori dei tipi di file, solo da attiva
-    if t > 0:
-        r1, r2 = r - 7.5 * u, r - 6.0 * u
-        for i, col in enumerate(COLORI):
-            a0 = -90 + i * 60 + 6
-            a1 = a0 + 48
-            pts = [(c + r2 * math.cos(math.radians(a0 + (a1 - a0) * k / 20)), c + r2 * math.sin(math.radians(a0 + (a1 - a0) * k / 20))) for k in range(21)]
-            pts += [(c + r1 * math.cos(math.radians(a0 + (a1 - a0) * k / 20)), c + r1 * math.sin(math.radians(a0 + (a1 - a0) * k / 20))) for k in range(20, -1, -1)]
-            d.polygon(pts, fill=col + (int(255 * t),))
+    d.ellipse([c - r, c - r, c + r, c + r], fill=(14, 17, 27, 255))
+    # riflesso in alto
+    luce = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    ImageDraw.Draw(luce).ellipse([c - r * 0.8, c - r * 1.05, c + r * 0.8, c + r * 0.25], fill=(150, 170, 220, 40))
+    luce = luce.filter(ImageFilter.GaussianBlur(r * 0.25))
+    maschera = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(maschera).ellipse([c - r, c - r, c + r, c + r], fill=255)
+    img.paste(Image.alpha_composite(img, luce), (0, 0), maschera)
+    d = ImageDraw.Draw(img)
+    # anello: grigio a riposo (non disturba), sfumato a colori quando ci passa sopra un file
+    w = max(2, int((1.2 + 1.3 * t) * u))
+    passi = 90
+    for k in range(passi):
+        a0 = k * 360 / passi - 90
+        d.arc([c - r, c - r, c + r, c + r], a0, a0 + 360 / passi + 0.6, fill=_mescola((96, 106, 132), _conico(k, passi), t) + (int(170 + 85 * t),), width=w)
     # frecce di conversione
-    chiaro = tuple(int(v + (255 - v) * t * 0.6) for v in (150, 225, 250))
-    ra = r * (0.40 - 0.06 * t)
-    w = max(2, int((1.5 + 0.6 * t) * u))
+    chiaro = _mescola((175, 186, 210), (255, 255, 255), t)
+    ra = r * (0.40 - 0.05 * t)
+    w = max(2, int((1.5 + 0.7 * t) * u))
     d.arc([c - ra, c - ra, c + ra, c + ra], 205, 335, fill=chiaro + (255,), width=w)
     d.arc([c - ra, c - ra, c + ra, c + ra], 25, 155, fill=chiaro + (255,), width=w)
     for ang in (335, 155):
@@ -225,53 +238,70 @@ def ascolta_scorciatoia(coda):
 
 
 def disegna_avviso(titolo, righe):
-    """Pannello con le novita' dopo un aggiornamento (angoli smussati, linee azzurre)."""
+    """Pannello di vetro scuro con le novita' dopo un aggiornamento."""
     S = 2
-    f_t = ImageFont.truetype(r"C:\Windows\Fonts\bahnschrift.ttf", int(15 * Z * S))
-    f_r = ImageFont.truetype(r"C:\Windows\Fonts\bahnschrift.ttf", int(12.5 * Z * S))
-    f_m = ImageFont.truetype(r"C:\Windows\Fonts\consola.ttf", int(10 * Z * S))
-    try:
-        f_t.set_variation_by_name("SemiBold")
-        f_r.set_variation_by_name("Regular")
-    except Exception:
-        pass
-    larg = int(320 * Z * S)
-    pad = int(18 * Z * S)
+
+    def carattere(dim, peso):
+        f = ImageFont.truetype(r"C:\Windows\Fonts\bahnschrift.ttf", int(dim * Z * S))
+        try:
+            f.set_variation_by_name(peso)
+        except Exception:
+            pass
+        return f
+    f_t, f_r, f_p = carattere(16, "SemiBold"), carattere(12.5, "Regular"), carattere(10.5, "SemiBold")
+    larg = int(330 * Z * S)
+    pad = int(20 * Z * S)
     misura = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     linee = []  # (testo, prima riga della voce?)
     for r in righe:
         riga, prima = "", True
         for p in r.split(" "):
             prova = (riga + " " + p).strip()
-            if riga and misura.textlength(prova, font=f_r) > larg - 2 * pad - 14 * Z * S:
+            if riga and misura.textlength(prova, font=f_r) > larg - 2 * pad - 16 * Z * S:
                 linee.append((riga, prima))
                 riga, prima = p, False
             else:
                 riga = prova
         linee.append((riga, prima))
     alt_r = int(19 * Z * S)
-    alt = pad + int(44 * Z * S) + alt_r * len(linee) + int(30 * Z * S)
-    img = Image.new("RGBA", (larg, alt), (0, 0, 0, 0))
+    ombra_pad = int(14 * Z * S)
+    alt = pad + int(56 * Z * S) + alt_r * len(linee) + int(34 * Z * S)
+    tot = (larg + 2 * ombra_pad, alt + 2 * ombra_pad)
+    from PIL import ImageFilter
+    img = Image.new("RGBA", tot, (0, 0, 0, 0))
+    ombra = Image.new("RGBA", tot, (0, 0, 0, 0))
+    raggio = int(16 * Z * S)
+    ImageDraw.Draw(ombra).rounded_rectangle([ombra_pad, ombra_pad + 6 * S, ombra_pad + larg, ombra_pad + alt + 6 * S],
+                                            radius=raggio, fill=(0, 0, 0, 120))
+    img.alpha_composite(ombra.filter(ImageFilter.GaussianBlur(8 * S)))
     d = ImageDraw.Draw(img)
-    t = int(12 * Z * S)  # angoli smussati
-    forma = [(t, 0), (larg - 1, 0), (larg - 1, alt - 1 - t), (larg - 1 - t, alt - 1), (0, alt - 1), (0, t)]
-    d.polygon(forma, fill=(4, 18, 31, 246))
-    d.line(forma + [forma[0]], fill=(89, 220, 255, 90), width=S)
-    # staffa luminosa nell'angolo in alto
-    d.line([(t, 0), (t + 40 * S, 0)], fill=(89, 220, 255, 255), width=2 * S)
-    d.line([(0, t), (0, t + 30 * S)], fill=(89, 220, 255, 255), width=2 * S)
-    x, y = pad, pad
-    d.text((x, y), "AGGIORNAMENTO", font=f_m, fill=(89, 220, 255, 255))
-    y += int(16 * Z * S)
-    d.text((x, y), titolo, font=f_t, fill=(230, 247, 255, 255))
-    y += int(28 * Z * S)
+    ox, oy = ombra_pad, ombra_pad
+    d.rounded_rectangle([ox, oy, ox + larg, oy + alt], radius=raggio, fill=(14, 17, 27, 248),
+                        outline=(255, 255, 255, 34), width=S)
+    # etichetta "Novità" con sfumatura
+    x, y = ox + pad, oy + pad
+    pill_w, pill_h = int(64 * Z * S), int(20 * Z * S)
+    sf = Image.new("RGBA", (pill_w, pill_h))
+    for k in range(pill_w):
+        ImageDraw.Draw(sf).line([k, 0, k, pill_h], fill=_mescola((56, 189, 248), (167, 139, 250), k / pill_w) + (255,))
+    m = Image.new("L", (pill_w, pill_h), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, pill_w - 1, pill_h - 1], radius=pill_h // 2, fill=255)
+    img.paste(sf, (x, y), m)
+    d.text((x + pill_w / 2, y + pill_h / 2), "NOVITÀ", font=f_p, fill=(12, 14, 24, 255), anchor="mm")
+    y += pill_h + int(10 * Z * S)
+    d.text((x, y), titolo, font=f_t, fill=(241, 245, 255, 255))
+    y += int(30 * Z * S)
+    voce = 0
     for testo, prima in linee:
         if prima:
-            d.rectangle([x, y + 7 * Z * S, x + 5 * Z * S, y + 12 * Z * S], fill=(89, 220, 255, 255))
-        d.text((x + 14 * Z * S, y), testo, font=f_r, fill=(214, 232, 243, 255))
+            q = 3 * Z * S
+            cy = y + 10 * Z * S
+            d.ellipse([x + 2 * S, cy - q, x + 2 * S + 2 * q, cy + q], fill=COLORI[voce % len(COLORI)] + (255,))
+            voce += 1
+        d.text((x + 16 * Z * S, y), testo, font=f_r, fill=(205, 213, 232, 255))
         y += alt_r
-    d.text((x, alt - pad + 4 * S), "CLIC PER CHIUDERE", font=f_m, fill=(115, 151, 171, 255), anchor="ls")
-    return img.resize((larg // S, alt // S), Image.LANCZOS)
+    d.text((x, oy + alt - pad + 4 * S), "Clic per chiudere", font=f_r, fill=(110, 120, 150, 255), anchor="ls")
+    return img.resize((tot[0] // S, tot[1] // S), Image.LANCZOS)
 
 
 def una_sola_istanza():

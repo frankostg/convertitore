@@ -82,16 +82,17 @@ ETICHETTE = {"unisci": "UNISCI", "word": "WORD", "leggero": "LEGGERO", "r50": "5
              "appunti": "APPUNTI"}
 
 # palette "sala comandi" (come il Jarvis): un colore per tipo di file
+# un colore per tipo di file (usato con parsimonia: puntini, anello, fetta scelta)
 COLORI = {
-    "immagine": (89, 220, 255),
-    "video": (183, 156, 255),
-    "audio": (109, 255, 176),
-    "pdf": (255, 181, 71),
-    "word": (96, 150, 255),
-    "excel": (190, 242, 100),
-    "powerpoint": (255, 110, 120),
-    "unione": (255, 181, 71),
-    "appunti": (200, 225, 240),
+    "immagine": (56, 189, 248),
+    "video": (167, 139, 250),
+    "audio": (52, 211, 153),
+    "pdf": (251, 146, 60),
+    "word": (96, 165, 250),
+    "excel": (163, 230, 53),
+    "powerpoint": (251, 113, 133),
+    "unione": (251, 146, 60),
+    "appunti": (203, 213, 225),
 }
 
 # ruota senza file: una fetta per ogni tipo di file
@@ -516,9 +517,11 @@ except Exception:
     Z = 1.0
 S = 2  # supersampling per bordi morbidi
 ZW, ZH = int(W * Z), int(H * Z)
-BG = (3, 16, 28)
-ACC = (89, 220, 255)      # azzurro dei comandi
-INK = (230, 247, 255)
+BG = (14, 17, 27)
+ACC = (125, 211, 252)     # accento neutro (ruota con piu' tipi)
+ACC2 = (167, 139, 250)
+INK = (241, 245, 255)
+INK2 = (148, 160, 190)
 FONTS = r"C:\Windows\Fonts"
 _font_cache = {}
 
@@ -584,43 +587,34 @@ def _cerchio(d, r, **kw):
     d.ellipse([CX * S - r, CY * S - r, CX * S + r, CY * S + r], **kw)
 
 
+def _mescola(c1, c2, t):
+    return tuple(int(a + (b - a) * t) for a, b in zip(c1, c2))
+
+
 def sfondo():
-    """Disco da sala comandi: luce al centro, griglia sottile, tacche e staffe agli angoli."""
+    """Disco di vetro scuro: ombra morbida, riflesso in alto, bordo sottilissimo."""
     n = (W * S, H * S)
-    img = Image.new("RGBA", n, (0, 0, 0, 0) if POPUP else BG + (255,))
-    if POPUP:
-        _cerchio(ImageDraw.Draw(img), R_PIATTO * S, fill=BG + (247,))
+    if not POPUP:
+        img = Image.new("RGBA", n, BG + (255,))
+    else:
+        img = Image.new("RGBA", n, (0, 0, 0, 0))
+        ombra = Image.new("RGBA", n, (0, 0, 0, 0))
+        dd = ImageDraw.Draw(ombra)
+        r = (R_PIATTO - 6) * S
+        dd.ellipse([CX * S - r, CY * S - r + 8 * S, CX * S + r, CY * S + r + 8 * S], fill=(0, 0, 0, 120))
+        img.alpha_composite(ombra.filter(ImageFilter.GaussianBlur(9 * S)))
+        disco = Image.new("RGBA", n, (0, 0, 0, 0))
+        _cerchio(ImageDraw.Draw(disco), R_PIATTO * S, fill=BG + (244,))
+        img.alpha_composite(disco)
+    # riflesso: luce che scende dall'alto del disco
     luce = Image.new("RGBA", n, (0, 0, 0, 0))
-    _cerchio(ImageDraw.Draw(luce), 210 * S, fill=(16, 66, 104, 170))
-    bagliore(img, luce.filter(ImageFilter.GaussianBlur(70 * S)))
-    griglia = Image.new("RGBA", n, (0, 0, 0, 0))
-    g = ImageDraw.Draw(griglia)
-    passo = 26 * S
-    for x in range((CX * S) % passo, n[0], passo):
-        g.line([x, 0, x, n[1]], fill=ACC + (11,), width=1)
-    for y in range((CY * S) % passo, n[1], passo):
-        g.line([0, y, n[0], y], fill=ACC + (11,), width=1)
-    bagliore(img, griglia)
-    d = ImageDraw.Draw(img)
+    r = 240 * S
+    ImageDraw.Draw(luce).ellipse([CX * S - r, CY * S - r - 150 * S, CX * S + r, CY * S + r - 150 * S], fill=(120, 140, 200, 34))
+    bagliore(img, luce.filter(ImageFilter.GaussianBlur(60 * S)))
     if POPUP:
-        _cerchio(d, (R_PIATTO - 1) * S, outline=ACC + (60,), width=S)
-    _cerchio(d, (R_OUT + 16) * S, outline=ACC + (26,), width=S)
-    # tacche ogni 2 gradi, piu' lunghe ogni 30
-    for k in range(180):
-        a = math.radians(k * 2)
-        lunga = k % 15 == 0
-        r1 = (R_OUT + 20) * S
-        r2 = r1 + (8 if lunga else 3) * S
-        d.line([CX * S + r1 * math.cos(a), CY * S + r1 * math.sin(a), CX * S + r2 * math.cos(a), CY * S + r2 * math.sin(a)],
-               fill=ACC + (150 if lunga else 40,), width=S)
-    # staffe HUD sulle diagonali
-    r = (R_OUT + 36) * S
-    for base in (45, 135, 225, 315):
-        d.arc([CX * S - r, CY * S - r, CX * S + r, CY * S + r], base - 9, base + 9, fill=ACC + (170,), width=2 * S)
-        for lato in (-9, 9):
-            aa = math.radians(base + lato)
-            d.line([CX * S + (r - 6 * S) * math.cos(aa), CY * S + (r - 6 * S) * math.sin(aa),
-                    CX * S + r * math.cos(aa), CY * S + r * math.sin(aa)], fill=ACC + (170,), width=2 * S)
+        d = ImageDraw.Draw(img)
+        _cerchio(d, (R_PIATTO - 0.5) * S, outline=(255, 255, 255, 34), width=S)
+        _cerchio(d, (R_PIATTO - 1.5) * S, outline=(0, 0, 0, 90), width=S)
     return img
 
 
@@ -635,75 +629,136 @@ def settore(a0, a1, r1, r2, passi=40):
     return pts
 
 
+def fetta_tonda(a0, a1, r1, r2, raggio=7):
+    """Maschera di una fetta con gli angoli arrotondati: sfoco e ritaglio a meta' (bordi lisci)."""
+    m = Image.new("L", (W * S, H * S), 0)
+    ImageDraw.Draw(m).polygon(settore(a0, a1, r1, r2, passi=60), fill=255)
+    x0, y0, x1, y1 = m.getbbox()
+    pad = raggio * 3 * S
+    box = (max(0, x0 - pad), max(0, y0 - pad), min(m.width, x1 + pad), min(m.height, y1 + pad))
+    pezzo = m.crop(box).filter(ImageFilter.GaussianBlur(raggio * S))
+    pezzo = pezzo.point(lambda v: max(0, min(255, (v - 128) * 6 + 128)))
+    m.paste(pezzo, box[:2])
+    return m
+
+
+_neutre = {}
+
+
+def _geometria(n, i, attiva=False):
+    passo = 360 / n
+    gap = (5.0 / ((R_IN + R_OUT) / 2)) * 180 / math.pi if n > 1 else 0  # stacco costante di ~5 px
+    a0 = -90 + i * passo - passo / 2 + gap / 2
+    return a0, a0 + passo - gap, R_IN + 10, R_OUT + (6 if attiva else 0)
+
+
+def _maschera_fetta(n, a0, a1, r1, r2):
+    if n > 1:
+        return fetta_tonda(a0, a1, r1, r2)
+    m = Image.new("L", (W * S, H * S), 0)
+    _cerchio(ImageDraw.Draw(m), r2 * S, fill=255)
+    _cerchio(ImageDraw.Draw(m), r1 * S, fill=0)
+    return m
+
+
+def _scritte(img, n, i, key, testo, sub, col=None, spenta=False):
+    a0, a1, r1, r2 = _geometria(n, i, attiva=col is None)
+    am = math.radians((a0 + a1) / 2)
+    rm = (r1 + r2) / 2 * S
+    tx, ty = CX * S + rm * math.cos(am), CY * S + rm * math.sin(am)
+    d = ImageDraw.Draw(img)
+    d.text((tx, ty - 7 * S), ETICHETTE.get(key, key.upper()), font=font(int((21 if n <= 8 else 18) * S)), fill=testo, anchor="mm")
+    d.text((tx, ty + 14 * S), SOTTOTITOLI.get(key, ""), font=font(int(11 * S), bold=False), fill=sub, anchor="mm")
+    if col is not None:
+        # puntino del colore del tipo
+        q = 2.6 * S
+        px, py = tx, ty - 27 * S  # sopra l'etichetta
+        d.ellipse([px - q, py - q, px + q, py + q], fill=col + (70 if spenta else 230,))
+
+
+def _nucleo(img, colori, spenta):
+    d = ImageDraw.Draw(img)
+    _cerchio(d, (R_IN - 2) * S, fill=(9, 11, 19, 255))
+    unico = len(set(colori)) == 1
+    c1, c2 = (colori[0], _mescola(colori[0], (255, 255, 255), 0.35)) if unico else (ACC, ACC2)
+    r = (R_IN - 2) * S
+    for k in range(180):
+        t = abs(((k / 180) * 2) - 1)
+        d.arc([CX * S - r, CY * S - r, CX * S + r, CY * S + r], k * 2 - 90, k * 2 - 87.5,
+              fill=_mescola(c1, c2, t) + (90 if spenta else 210,), width=int(1.6 * S))
+
+
+def _ruota_neutra(base, opzioni, colori, spenta):
+    """Tutte le fette a riposo (vetro, bordo sottile, scritte, puntino): si disegna una volta sola."""
+    k = (id(base), tuple(opzioni), tuple(colori), spenta)
+    if k not in _neutre:
+        if len(_neutre) > 24:
+            _neutre.clear()
+        n = len(opzioni)
+        img = base.copy()
+        unione = Image.new("L", img.size, 0)
+        for i in range(n):
+            a0, a1, r1, r2 = _geometria(n, i)
+            unione.paste(255, mask=_maschera_fetta(n, a0, a1, r1, r2))
+        vetro = Image.new("RGBA", img.size, (255, 255, 255, 0))
+        vetro.putalpha(unione.point(lambda v: v * (8 if spenta else 14) // 255))
+        img.alpha_composite(vetro)
+        linea = Image.new("RGBA", img.size, (255, 255, 255, 0))
+        linea.putalpha(unione.filter(ImageFilter.FIND_EDGES).point(lambda v: min(255, v) * (14 if spenta else 26) // 255))
+        img.alpha_composite(linea)
+        for i, key in enumerate(opzioni):
+            _scritte(img, n, i, key, INK + (90 if spenta else 240,), INK2 + (80 if spenta else 255,), colori[i], spenta)
+        _nucleo(img, colori, spenta)
+        _neutre[k] = img
+    return _neutre[k]
+
+
 def disegna_ruota(base, opzioni, colore, hover, spenta=False):
     """`colore` e' un colore unico oppure una lista (un colore per fetta)."""
     colori = colore if isinstance(colore, list) else [colore] * len(opzioni)
-    img = base.copy()
-    n = len(opzioni)
-    passo = 360 / n
-    gap = 1.1 if n > 1 else 0
-    r_in = R_IN + 10
-    if hover is not None and not spenta:
-        a0 = -90 + hover * passo - passo / 2 + gap
-        glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        ImageDraw.Draw(glow).polygon(settore(a0, a0 + passo - 2 * gap, r_in, R_OUT + 12), fill=colori[hover] + (150,))
-        bagliore(img, glow.filter(ImageFilter.GaussianBlur(18 * S)))
-    strato = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(strato)
-    f_big = font(int((22 if n <= 8 else 19) * S))
-    f_small = font_mono(int(10.5 * S))
-    for i, key in enumerate(opzioni):
-        a0 = -90 + i * passo - passo / 2 + gap
-        a1 = a0 + passo - 2 * gap
-        attivo = (i == hover) and not spenta
-        col = colori[i]
-        r2 = R_OUT + (8 if attivo else 0)
-        if attivo:
-            fill, line, testo, sub, barra = col + (62,), col + (255,), INK + (255,), INK + (215,), col + (255,)
-        else:
-            fill = col + (12 if spenta else 20,)
-            line = col + (35 if spenta else 85,)
-            testo = INK + (80 if spenta else 235,)
-            sub = col + (60 if spenta else 185,)
-            barra = col + (50 if spenta else 150,)
-        poly = settore(a0, a1, r_in, r2)
-        d.polygon(poly, fill=fill)
-        d.line(poly + [poly[0]], fill=line, width=S, joint="curve")
-        # barra colorata sul bordo esterno della fetta
-        d.polygon(settore(a0 + 0.8, a1 - 0.8, r2 - 5, r2 - 2), fill=barra)
-        am = math.radians((a0 + a1) / 2)
-        rm = (r_in + r2) / 2 * S
-        tx, ty = CX * S + rm * math.cos(am), CY * S + rm * math.sin(am)
-        d.text((tx, ty - 6 * S), ETICHETTE.get(key, key.upper()), font=f_big, fill=testo, anchor="mm")
-        d.text((tx, ty + 15 * S), SOTTOTITOLI.get(key, "").upper(), font=f_small, fill=sub, anchor="mm")
-        if attivo:
-            # puntatore dal centro verso la fetta scelta
-            p1, p2 = (R_IN - 2) * S, (r_in - 3) * S
-            d.line([CX * S + p1 * math.cos(am), CY * S + p1 * math.sin(am),
-                    CX * S + p2 * math.cos(am), CY * S + p2 * math.sin(am)], fill=col + (255,), width=2 * S)
-    # nucleo centrale
-    cc = ACC if len(set(colori)) > 1 else colori[0]
-    _cerchio(d, (R_IN - 4) * S, fill=(4, 20, 34, 255), outline=cc + (170,), width=2 * S)
-    r = (R_IN - 13) * S
-    for k in range(48):
-        d.arc([CX * S - r, CY * S - r, CX * S + r, CY * S + r], k * 7.5, k * 7.5 + 3.5, fill=cc + (75,), width=S)
-    _cerchio(d, (R_IN - 21) * S, outline=cc + (28,), width=S)
-    img.alpha_composite(strato)
+    img = _ruota_neutra(base, opzioni, colori, spenta)
+    if hover is None or spenta:
+        return img.resize((ZW, ZH), Image.LANCZOS)
+    img = img.copy()
+    n, col = len(opzioni), colori[hover]
+    a0, a1, r1, r2 = _geometria(n, hover, attiva=True)
+    maschera = _maschera_fetta(n, a0, a1, r1, r2)
+    x0, y0, x1, y1 = maschera.getbbox()
+    pad = 40 * S
+    box = (max(0, x0 - pad), max(0, y0 - pad), min(img.width, x1 + pad), min(img.height, y1 + pad))
+    # lavoro solo nel riquadro della fetta: molto piu' veloce
+    m = maschera.crop(box)
+    pezzo = img.crop(box)
+    glow = Image.new("RGBA", m.size, col + (0,))
+    glow.putalpha(m.point(lambda v: v * 150 // 255))
+    pezzo.alpha_composite(glow.filter(ImageFilter.GaussianBlur(16 * S)))
+    sf = Image.new("RGBA", m.size, (0, 0, 0, 0))
+    ds = ImageDraw.Draw(sf)
+    cx, cy = CX * S - box[0], CY * S - box[1]
+    for k in range(24, -1, -1):
+        t = k / 24
+        rr = (r1 + (r2 - r1) * t) * S
+        c = _mescola(_mescola(col, (0, 0, 0), 0.18), _mescola(col, (255, 255, 255), 0.22), t)
+        ds.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=c + (255,))
+    pezzo.paste(sf, (0, 0), m)
+    img.paste(pezzo, box[:2])
+    _scritte(img, n, hover, opzioni[hover], (12, 14, 24, 255), (12, 14, 24, 190))
+    _nucleo(img, colori, spenta)
     return img.resize((ZW, ZH), Image.LANCZOS)
 
 
 def disegna_attesa(base, evidenzia=False):
     img = base.copy()
     d = ImageDraw.Draw(img)
-    for r, a, w in ((R_OUT, 150 if evidenzia else 60, 2), (R_OUT - 40, 60 if evidenzia else 25, 1), (R_IN - 4, 200 if evidenzia else 120, 2)):
-        _cerchio(d, r * S, outline=ACC + (a,), width=w * S)
-    r = (R_OUT - 20) * S
-    for k in range(60):
-        a0 = k * 6
-        d.arc([CX * S - r, CY * S - r, CX * S + r, CY * S + r], a0, a0 + 3, fill=ACC + (130 if evidenzia else 55,), width=3 * S)
+    _cerchio(d, (R_IN - 2) * S, fill=(9, 11, 19, 255), outline=ACC + (200 if evidenzia else 110,), width=int(1.6 * S))
+    r = R_OUT * S
+    for k in range(120):
+        t = abs(((k / 120) * 2) - 1)
+        d.arc([CX * S - r, CY * S - r, CX * S + r, CY * S + r], k * 3, k * 3 + 1.6,
+              fill=_mescola(ACC, ACC2, t) + (170 if evidenzia else 60,), width=2 * S)
     if evidenzia:
         glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        _cerchio(ImageDraw.Draw(glow), R_OUT * S, outline=ACC + (220,), width=10 * S)
+        _cerchio(ImageDraw.Draw(glow), R_OUT * S, outline=ACC + (200,), width=8 * S)
         bagliore(img, glow.filter(ImageFilter.GaussianBlur(14 * S)))
     return img.resize((ZW, ZH), Image.LANCZOS)
 
@@ -755,23 +810,23 @@ class App:
         else:
             root.geometry(f"{ZW}x{ZH}")
         root.resizable(False, False)
-        root.configure(bg="#03101c")
+        root.configure(bg="#0e111b")
         ico = os.path.join(os.path.dirname(os.path.abspath(__file__)), "convertitore.ico")
         if os.path.exists(ico):
             root.iconbitmap(ico)
         if not POPUP:
             barra_scura(root)
 
-        self.cv = tk.Canvas(root, width=ZW, height=ZH, bg=KEYHEX if POPUP else "#03101c", highlightthickness=0)
+        self.cv = tk.Canvas(root, width=ZW, height=ZH, bg=KEYHEX if POPUP else "#0e111b", highlightthickness=0)
         self.cv.pack()
         self.base = sfondo()
         self.img_id = self.cv.create_image(0, 0, anchor="nw")
-        self.titolo = self.cv.create_text((W / 2) * Z, (40) * Z, text="C O N V E R T I T O R E", fill="#e6f7ff", font=("Bahnschrift SemiBold", -int(20 * Z)))
-        self.sotto = self.cv.create_text((W / 2) * Z, (66) * Z, text="", fill="#a9c7d8", font=("Bahnschrift", -int(13 * Z)))
-        self.c1 = self.cv.create_text((CX) * Z, (CY - 22) * Z, text="", fill="#e6f7ff", font=("Bahnschrift SemiBold", -int(17 * Z)), width=int(180 * Z), justify="center", anchor="n")
-        self.c2 = self.cv.create_text((CX) * Z, (CY + 8) * Z, text="", fill="#a9c7d8", font=("Bahnschrift", -int(13 * Z)), width=int(180 * Z), justify="center", anchor="n")
-        self.c3 = self.cv.create_text((CX) * Z, (CY + 32) * Z, text="", fill="#a9c7d8", font=("Bahnschrift", -int(12 * Z)), width=int(180 * Z), justify="center", anchor="n")
-        self.piede = self.cv.create_text((W / 2) * Z, (H - 22) * Z, text="", fill="#7397ab", font=("Bahnschrift", -int(12 * Z)))
+        self.titolo = self.cv.create_text((W / 2) * Z, (40) * Z, text="C O N V E R T I T O R E", fill="#f1f5ff", font=("Bahnschrift SemiBold", -int(20 * Z)))
+        self.sotto = self.cv.create_text((W / 2) * Z, (66) * Z, text="", fill="#94a0be", font=("Bahnschrift", -int(13 * Z)))
+        self.c1 = self.cv.create_text((CX) * Z, (CY - 22) * Z, text="", fill="#f1f5ff", font=("Bahnschrift SemiBold", -int(17 * Z)), width=int(180 * Z), justify="center", anchor="n")
+        self.c2 = self.cv.create_text((CX) * Z, (CY + 8) * Z, text="", fill="#94a0be", font=("Bahnschrift", -int(13 * Z)), width=int(180 * Z), justify="center", anchor="n")
+        self.c3 = self.cv.create_text((CX) * Z, (CY + 32) * Z, text="", fill="#94a0be", font=("Bahnschrift", -int(12 * Z)), width=int(180 * Z), justify="center", anchor="n")
+        self.piede = self.cv.create_text((W / 2) * Z, (H - 22) * Z, text="", fill="#6b7694", font=("Bahnschrift", -int(12 * Z)))
 
         self.cv.drop_target_register(DND_FILES)
         self.cv.dnd_bind("<<DropEnter>>", lambda e: self._attesa(True) if self.stato == "attesa" else e.action)
@@ -898,7 +953,7 @@ class App:
             testo = self.cv.itemcget(item, "text")
             if not testo:
                 continue
-            f = font_mono(int(dim * Z)) if item == self.c3 else font(int(dim * Z), bold=gr)
+            f = font(int(dim * Z), bold=gr)
             colore = self.cv.itemcget(item, "fill")
             righe = []
             for par in testo.split("\n"):
@@ -967,7 +1022,7 @@ class App:
 
     def _testi(self, a="", b="", c="", sotto="", piede=""):
         self._pronta = None
-        self.cv.itemconfigure(self.c1, text=a, fill="#e6f7ff")
+        self.cv.itemconfigure(self.c1, text=a, fill="#f1f5ff")
         self.cv.itemconfigure(self.c2, text=b)
         self.cv.itemconfigure(self.c3, text=c)
         self.cv.itemconfigure(self.sotto, text=sotto)
@@ -1148,7 +1203,7 @@ class App:
                 self._panoramica()
             elif self._indice(e.x, e.y) is not None:
                 self._testi(self.etichetta_cat(), f"prima trascina qui\n{NOMI_TIPO[self.cat]}", "clic qui per tornare")
-                self.cv.itemconfigure(self.c1, fill="#ffb547")
+                self.cv.itemconfigure(self.c1, fill="#fbbf24")
                 self._presenta() if POPUP else None
             elif math.hypot(e.x - CX, e.y - CY) > R_OUT + 30:
                 self.reset()
@@ -1253,7 +1308,7 @@ class App:
                         else accorcia(os.path.basename(outs[0]), 24),
                         "clicca qui per\naprire la cartella",
                         piede="Trascina altri file o clicca fuori per ricominciare")
-            self.cv.itemconfigure(self.c1, fill="#6dffb0")
+            self.cv.itemconfigure(self.c1, fill="#4ade80")
             self._presenta()
             if POPUP:
                 self.root.after(2500, self._chiudi_dopo)
@@ -1262,7 +1317,7 @@ class App:
             self._testi("⚠  Errore" if not outs else f"⚠  {len(errori)} errori", accorcia(msg, 90),
                         "clicca qui per la cartella" if outs else "",
                         piede="Clicca fuori o premi Esc per ricominciare")
-            self.cv.itemconfigure(self.c1, fill="#ff6470")
+            self.cv.itemconfigure(self.c1, fill="#fb7185")
             self._presenta()
 
 
