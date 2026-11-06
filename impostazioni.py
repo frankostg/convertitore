@@ -205,9 +205,17 @@ def finestra():
     pillole(box, "_avvio", (("si", t("Parte con Windows")), ("no", t("Solo quando la apro"))),
             al_cambio=lambda v: imposta_avvio(v == "si"))
 
-    chiudi = tk.Label(corpo, text=t("Chiudi"), bg=ACC, fg=ACC_INK, font=(F, -px(14), "bold"), padx=px(22), pady=px(8),
+    fondo = tk.Frame(corpo, bg=BG)
+    fondo.pack(fill="x", pady=(px(6), 0))
+    licenze = os.path.join(os.path.dirname(sys.executable) if FROZEN else QUI, "licenze-terze-parti.txt")
+    if os.path.exists(licenze):
+        link = tk.Label(fondo, text=t("Licenze di terze parti"), bg=BG, fg=INK3, font=(F, -px(12), "underline"),
+                        cursor="hand2")
+        link.pack(side="left")
+        link.bind("<Button-1>", lambda e: os.startfile(licenze))
+    chiudi = tk.Label(fondo, text=t("Chiudi"), bg=ACC, fg=ACC_INK, font=(F, -px(14), "bold"), padx=px(22), pady=px(8),
                       cursor="hand2")
-    chiudi.pack(anchor="e", pady=(px(6), 0))
+    chiudi.pack(side="right")
     chiudi.bind("<Button-1>", lambda e: root.destroy())
     root.bind("<Escape>", lambda e: root.destroy())
     root.update_idletasks()

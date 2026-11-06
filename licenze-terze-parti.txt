@@ -1,0 +1,42 @@
+Convertitore - componenti di terze parti / third-party components
+==================================================================
+
+Il Convertitore include i seguenti componenti, ciascuno con la propria licenza.
+The Converter includes the following components, each under its own licence.
+
+FFmpeg 9.0 (build "full" di gyan.dev)
+  Licenza: GNU General Public License v3 (GPL-3.0)
+  Incluso come programma separato (ffmpeg.exe), non modificato.
+  Sorgenti / source code: https://ffmpeg.org/download.html  -  build: https://www.gyan.dev/ffmpeg/builds/
+  Testo della licenza / licence text: https://www.gnu.org/licenses/gpl-3.0.html
+
+pypdfium2 e PDFium
+  Licenza: Apache-2.0 / BSD-3-Clause
+  https://github.com/pypdfium2-team/pypdfium2  -  https://pdfium.googlesource.com/pdfium/
+
+pikepdf e qpdf
+  Licenza: Mozilla Public License 2.0 (pikepdf), Apache-2.0 (qpdf)
+  https://github.com/pikepdf/pikepdf  -  https://github.com/qpdf/qpdf
+
+lxml (richiesto da pikepdf)
+  Licenza: BSD-3-Clause - https://lxml.de
+
+Pillow
+  Licenza: MIT-CMU (HPND) - https://python-pillow.org
+
+pillow-heif e libheif
+  Licenza: BSD-3-Clause (pillow-heif), LGPL-3.0 (libheif, libde265)
+  https://github.com/bigcat88/pillow_heif
+
+tkinterdnd2
+  Licenza: MIT - https://github.com/Eliav2/tkinterdnd2
+
+pywin32
+  Licenza: PSF - https://github.com/mhammond/pywin32
+
+Python
+  Licenza: Python Software Foundation License - https://www.python.org
+
+PyInstaller (bootloader)
+  Licenza: GPL-2.0 con eccezione che consente la distribuzione di programmi commerciali
+  https://pyinstaller.org

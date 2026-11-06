@@ -139,6 +139,24 @@ def _filtra(chiavi, exts):
     return [d for d in chiavi if not (len(exts) == 1 and d in exts)]
 
 
+_office = {}
+
+
+def office_installato(app):
+    """True se sul PC c'e' Microsoft Word / Excel / PowerPoint (registrati per l'automazione)."""
+    if app not in _office:
+        import winreg
+        try:
+            winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"{app}.Application\CLSID"))
+            _office[app] = True
+        except OSError:
+            _office[app] = False
+    return _office[app]
+
+
+OFFICE_APP = {"word": "Word", "excel": "Excel", "powerpoint": "PowerPoint"}
+
+
 def opzioni_per(files):
     """Restituisce (categoria, lista di chiavi) valide per tutti i file."""
     cats = {categoria(f) for f in files}
@@ -152,6 +170,10 @@ def opzioni_per(files):
     cat = cats.pop()
     exts = {ALIAS.get(estensione(f), estensione(f)) for f in files}
     opz = _filtra(DESTINAZIONI[cat], exts)
+    if cat == "pdf" and not office_installato("Word"):
+        opz.remove("word")  # PDF -> Word lo fa Word: senza Office la fetta non c'e'
+    if cat in OFFICE_APP and not office_installato(OFFICE_APP[cat]):
+        return cat, []  # serve Office per questi documenti
     if cat in ("immagine", "pdf") and len(files) > 1:
         opz.insert(0, "unisci")
     return cat, opz
@@ -202,9 +224,9 @@ IMP = impostazioni()
 
 # quanto alleggerisce "Leggero" (Impostazioni: poco / medio / molto)
 LIVELLI = {
-    "poco": {"lato": 3200, "jpg": 86, "webp": 86, "pdf_dpi": 170, "pdf_q": 80, "video_lato": 1920, "crf": 25, "audio": "128k"},
-    "medio": {"lato": 2560, "jpg": 78, "webp": 80, "pdf_dpi": 130, "pdf_q": 70, "video_lato": 1280, "crf": 28, "audio": "96k"},
-    "molto": {"lato": 1600, "jpg": 68, "webp": 70, "pdf_dpi": 96, "pdf_q": 55, "video_lato": 854, "crf": 31, "audio": "64k"},
+    "poco": {"lato": 3200, "jpg": 86, "webp": 86, "pdf_dpi": 170, "pdf_q": 80, "pdf_lato": 2400, "video_lato": 1920, "crf": 25, "audio": "128k"},
+    "medio": {"lato": 2560, "jpg": 78, "webp": 80, "pdf_dpi": 130, "pdf_q": 70, "pdf_lato": 1700, "video_lato": 1280, "crf": 28, "audio": "96k"},
+    "molto": {"lato": 1600, "jpg": 68, "webp": 70, "pdf_dpi": 96, "pdf_q": 55, "pdf_lato": 1200, "video_lato": 854, "crf": 31, "audio": "64k"},
 }
 
 
@@ -228,7 +250,7 @@ CARTELLA_USCITA = None  # se impostata (immagine dagli appunti) i file finiscono
 
 class Annullato(BaseException):
     """Conversione fermata da chi usa il programma. Deriva da BaseException apposta:
-    le librerie che ignorano gli errori (pdf2docx salta le pagine difettose) non la fermano."""
+    le librerie che ignorano gli errori non la fermano."""
 
 
 class Lavoro:
@@ -464,152 +486,205 @@ def chiave_nome(f):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", os.path.basename(f))]
 
 
-def converti_pdf(src, key):
-    import pymupdf
-    if key == "word":
-        return pdf_in_word(src)
-    doc = apri_pdf(src)
-    if key == "leggero":
-        out = uscita(src, "pdf", t(" (leggero)"))
-        try:
-            lv = livello()
-            doc.rewrite_images(dpi_threshold=lv["pdf_dpi"] + 30, dpi_target=lv["pdf_dpi"], quality=lv["pdf_q"])
-        except Exception:
-            pass  # PDF senza immagini: si guadagna solo dalla compressione
-        try:
-            doc.subset_fonts()
-        except Exception:
-            pass
-        doc.save(out, garbage=4, deflate=True, deflate_images=True, deflate_fonts=True, clean=True)
-        doc.close()
-        troppo_grande(src, out)
-        return [out]
-    if key in ("destra", "sinistra", "r180"):
-        delta = {"destra": 90, "sinistra": 270, "r180": 180}[key]
-        for page in doc:
-            page.set_rotation((page.rotation + delta) % 360)
-            LAVORO.parte((page.number + 1) / len(doc) * 0.8)
-        out = uscita(src, "pdf", t(" (ruotato)"))
-        doc.save(out, garbage=3, deflate=True)
-        return [out]
-    if key == "txt":
-        out = uscita(src, "txt")
-        with open(out, "w", encoding="utf-8") as fh:
-            for i, page in enumerate(doc):
-                if i:
-                    fh.write("\n\n----- pagina %d -----\n\n" % (i + 1))
-                fh.write(page.get_text())
+# PDF: pypdfium2 (pagine in immagini, testo) e pikepdf (unisci, ruota, alleggerisci).
+# Licenze BSD/Apache e MPL: si possono usare in un programma a pagamento.
+
+def apri_pdf(src):
+    """Apre il PDF con pikepdf; errori chiari per file danneggiati o con password."""
+    import pikepdf
+    try:
+        return pikepdf.open(src)
+    except pikepdf.PasswordError as e:
+        raise RuntimeError(t("PDF protetto da password: aprilo, togli la password e riprova")) from e
+    except Exception as e:
+        raise RuntimeError(t("PDF danneggiato o non leggibile")) from e
+
+
+def apri_pdfium(src):
+    import pypdfium2 as pdfium
+    try:
+        return pdfium.PdfDocument(src)
+    except Exception as e:
+        if "password" in str(e).lower():
+            raise RuntimeError(t("PDF protetto da password: aprilo, togli la password e riprova")) from e
+        raise RuntimeError(t("PDF danneggiato o non leggibile")) from e
+
+
+def alleggerisci_pdf(src):
+    """Ricomprime le foto dentro il PDF (piu' piccole e in JPEG) e compatta il file."""
+    import io
+    import pikepdf
+    lv = livello()
+    out = uscita(src, "pdf", t(" (leggero)"))
+    with apri_pdf(src) as pdf:
+        fatte = set()
+        n = len(pdf.pages)
+        for i, pagina in enumerate(pdf.pages):
+            LAVORO.parte(i / n * 0.9)
+            for raw in pagina.images.values():
+                if raw.objgen in fatte:
+                    continue
+                fatte.add(raw.objgen)
                 try:
-                    LAVORO.parte((i + 1) / len(doc))
-                except Annullato:
-                    fh.close()
-                    os.remove(out)
-                    raise
-        return [out]
+                    if "/Mask" in raw or "/Decode" in raw or raw.get("/ImageMask", False):
+                        continue  # trasparenze particolari: meglio non toccarle
+                    img = pikepdf.PdfImage(raw)
+                    if img.bits_per_component != 8 or img.mode not in ("RGB", "L"):
+                        continue
+                    filtro = [str(f) for f in img.filters]
+                    w, h = img.width, img.height
+                    if max(w, h) <= lv["pdf_lato"] and "/DCTDecode" in filtro:
+                        continue  # gia' piccola e gia' JPEG
+                    if w * h < 40_000:
+                        continue  # icone e loghi: non conviene
+                    pil = img.as_pil_image()
+                    pil = pil.convert("L" if img.mode == "L" else "RGB")
+                    pil.thumbnail((lv["pdf_lato"], lv["pdf_lato"]), Image.LANCZOS)
+                    buf = io.BytesIO()
+                    pil.save(buf, "JPEG", quality=lv["pdf_q"], optimize=True)
+                    raw.write(buf.getvalue(), filter=pikepdf.Name.DCTDecode)
+                    raw.Width, raw.Height = pil.size
+                    raw.BitsPerComponent = 8
+                    raw.ColorSpace = pikepdf.Name.DeviceGray if pil.mode == "L" else pikepdf.Name.DeviceRGB
+                    if "/DecodeParms" in raw:
+                        del raw.DecodeParms
+                except Exception:
+                    continue  # un'immagine strana non deve fermare tutto
+        LAVORO.parte(0.92)
+        pdf.remove_unreferenced_resources()
+        pdf.save(out, compress_streams=True, recompress_flate=True,
+                 object_stream_mode=pikepdf.ObjectStreamMode.generate)
+    troppo_grande(src, out)
+    return [out]
+
+
+def ruota_pdf(src, key):
+    delta = {"destra": 90, "sinistra": 270, "r180": 180}[key]
+    out = uscita(src, "pdf", t(" (ruotato)"))
+    with apri_pdf(src) as pdf:
+        n = len(pdf.pages)
+        for i, pagina in enumerate(pdf.pages):
+            pagina.rotate(delta, relative=True)
+            LAVORO.parte((i + 1) / n * 0.8)
+        pdf.save(out)
+    return [out]
+
+
+def pdf_in_testo(src):
+    doc = apri_pdfium(src)
+    out = uscita(src, "txt")
+    try:
+        with open(out, "w", encoding="utf-8") as fh:
+            for i in range(len(doc)):
+                if i:
+                    fh.write("\n\n" + t("----- pagina {n} -----", n=i + 1) + "\n\n")
+                pagina = doc[i]
+                testo = pagina.get_textpage()
+                fh.write(testo.get_text_range().replace("\r\n", "\n"))
+                testo.close()
+                pagina.close()
+                LAVORO.parte((i + 1) / len(doc))
+    except BaseException:
+        if os.path.exists(out):
+            os.remove(out)
+        raise
+    finally:
+        doc.close()
+    return [out]
+
+
+def pdf_in_immagini(src, key):
+    doc = apri_pdfium(src)
     outs = []
-    for i, page in enumerate(doc):
-        try:
-            LAVORO.parte(i / len(doc))
-        except Annullato:
-            for o in outs:  # niente pagine a meta': tolgo quelle gia' create di questo PDF
-                os.remove(o)
-            raise
-        suff = "" if len(doc) == 1 else t(" - pagina {n}", n=i + 1)
-        out = uscita(src, key, suff)
-        pix = page.get_pixmap(dpi=170)
-        if key == "jpg":
-            pix.save(out, jpg_quality=90)
-        else:
-            pix.save(out)
-        outs.append(out)
+    try:
+        n = len(doc)
+        for i in range(n):
+            LAVORO.parte(i / n)
+            pagina = doc[i]
+            im = pagina.render(scale=170 / 72).to_pil()
+            pagina.close()
+            suff = "" if n == 1 else t(" - pagina {n}", n=i + 1)
+            out = uscita(src, key, suff)
+            if key == "jpg":
+                im.convert("RGB").save(out, "JPEG", quality=90)
+            else:
+                im.save(out)
+            outs.append(out)
+    except Annullato:
+        for o in outs:  # niente pagine a meta': tolgo quelle gia' create di questo PDF
+            os.remove(o)
+        raise
+    finally:
+        doc.close()
     return outs
 
 
-def apri_pdf(src):
-    import pymupdf
-    try:
-        doc = pymupdf.open(src)
-    except Exception as e:
-        raise RuntimeError(t("PDF danneggiato o non leggibile")) from e
-    if doc.needs_pass:
-        raise RuntimeError(t("PDF protetto da password: aprilo, togli la password e riprova"))
-    return doc
-
-
-class _AvanzamentoWord:
-    """pdf2docx scrive "(3/10) Page 3" mentre lavora: lo uso come avanzamento e,
-    se l'utente annulla, interrompo la conversione da qui."""
-
-    def __init__(self):
-        import logging
-        self.fase = 0
-
-        class Gestore(logging.Handler):
-            def emit(gestore, record):
-                import re
-                testo = record.getMessage()
-                if "[4/4]" in testo:
-                    self.fase = 1
-                m = re.match(r"\((\d+)/(\d+)\)", testo)
-                if m:
-                    LAVORO.parte(0.5 * self.fase + 0.5 * int(m.group(1)) / int(m.group(2)))
-                else:
-                    LAVORO.controlla()
-        self.gestore = Gestore()
-
-
 def pdf_in_word(src):
-    """PDF -> Word modificabile (pdf2docx: funziona anche senza Office)."""
-    import logging
+    """PDF -> Word modificabile con Microsoft Word (la fetta compare solo se Word c'e').
+    Word riceve una copia con un nome nuovo: se una volta si e' chiuso male su un file,
+    la volta dopo chiede "Aprirlo?" e resterebbe fermo li'."""
+    import shutil
+    import tempfile
+    import uuid
     apri_pdf(src).close()  # controlla subito password e file danneggiati
-    from pdf2docx import Converter
     out = uscita(src, "docx")
-    radice = logging.getLogger()
-    av = _AvanzamentoWord()
-    radice.addHandler(av.gestore)
-    livello = radice.level
-    radice.setLevel(logging.INFO)
-    cv = None
+    cartella = os.path.join(tempfile.gettempdir(), "Convertitore")
+    os.makedirs(cartella, exist_ok=True)
+    copia = os.path.join(cartella, f"pdf-{uuid.uuid4().hex[:12]}.pdf")
+    shutil.copyfile(src, copia)
     try:
-        cv = Converter(src)
-        cv.convert(out)
-    except BaseException:
-        if os.path.exists(out):
-            try:
-                os.remove(out)
-            except OSError:
-                pass
+        return converti_office(copia, "docx", "word", out=out)
+    except Exception as e:
+        if type(e).__name__ == "com_error":
+            raise RuntimeError(t("Word non è riuscito a convertire il PDF: serve Office attivato e aggiornato")) from e
         raise
     finally:
-        radice.removeHandler(av.gestore)
-        radice.setLevel(livello)
-        if cv is not None:
-            cv.close()
-    return [out]
+        try:
+            os.remove(copia)
+        except OSError:
+            pass
+
+
+def converti_pdf(src, key):
+    if key == "word":
+        return pdf_in_word(src)
+    if key == "leggero":
+        return alleggerisci_pdf(src)
+    if key in ("destra", "sinistra", "r180"):
+        return ruota_pdf(src, key)
+    if key == "txt":
+        return pdf_in_testo(src)
+    return pdf_in_immagini(src, key)
 
 
 def unisci_pdf(files):
     """Mette PDF e immagini (in ordine di nome) in un unico PDF."""
     import io
-    import pymupdf
+    import pikepdf
     from PIL import ImageOps
     files = sorted(files, key=chiave_nome)
-    out_doc = pymupdf.open()
-    for k, f in enumerate(files):
-        LAVORO.frazione = k / len(files)
-        LAVORO.nome = os.path.basename(f)
-        LAVORO.controlla()
-        if categoria(f) == "pdf":
-            with apri_pdf(f) as d:
-                out_doc.insert_pdf(d)
-        else:
-            buf = io.BytesIO()
-            su_bianco(ImageOps.exif_transpose(Image.open(f))).save(buf, "PDF", resolution=150)
-            with pymupdf.open("pdf", buf.getvalue()) as d:
-                out_doc.insert_pdf(d)
-    nome = t("Immagini unite") if all(categoria(f) == "immagine" for f in files) else t("PDF unito")
-    out = percorso_libero(cartella_per(files[0]), nome, "pdf")
-    out_doc.save(out, garbage=3, deflate=True)
+    aperti = []  # pikepdf vuole i PDF di origine aperti finche' non salva
+    try:
+        unito = pikepdf.new()
+        for k, f in enumerate(files):
+            LAVORO.frazione = k / len(files)
+            LAVORO.nome = os.path.basename(f)
+            LAVORO.controlla()
+            if categoria(f) == "pdf":
+                d = apri_pdf(f)
+            else:
+                buf = io.BytesIO()
+                su_bianco(ImageOps.exif_transpose(Image.open(f))).save(buf, "PDF", resolution=150)
+                buf.seek(0)
+                d = pikepdf.open(buf)
+            aperti.append(d)
+            unito.pages.extend(d.pages)
+        nome = t("Immagini unite") if all(categoria(f) == "immagine" for f in files) else t("PDF unito")
+        out = percorso_libero(cartella_per(files[0]), nome, "pdf")
+        unito.save(out, compress_streams=True, object_stream_mode=pikepdf.ObjectStreamMode.generate)
+    finally:
+        for d in aperti:
+            d.close()
     return [out]
 
 
@@ -715,13 +790,40 @@ def pid_di(nome_exe):
     return pids
 
 
-def converti_office(src, key, cat):
+def domanda_office(pid):
+    """Testo di una finestra di dialogo che Office (processo pid) ha aperto e aspetta risposta, o None."""
+    import win32gui
+    import win32process
+    trovata = []
+
+    def finestra(h, _):
+        # Office lavora nascosto: qualunque sua finestra visibile e' una domanda che aspetta risposta
+        if not win32gui.IsWindowVisible(h) or win32process.GetWindowThreadProcessId(h)[1] != pid:
+            return
+        x0, y0, x1, y1 = win32gui.GetWindowRect(h)
+        if x1 - x0 < 60 or y1 - y0 < 40:
+            return
+        testi = []
+        win32gui.EnumChildWindows(h, lambda c, _: testi.append(win32gui.GetWindowText(c))
+                                  if win32gui.GetClassName(c) == "Static" and win32gui.GetWindowText(c) else None, None)
+        testo = " ".join(testi) or win32gui.GetWindowText(h)
+        trovata.append(testo.replace("\r", " ").replace("\n", " ").strip() or "?")
+    try:
+        win32gui.EnumWindows(finestra, None)
+    except Exception:
+        return None
+    return trovata[0] if trovata else None
+
+
+def converti_office(src, key, cat, out=None):
     """Word/Excel/PowerPoint aperti di nascosto. Ricordo il loro processo per poterli
-    chiudere se l'utente annulla o se si bloccano (per esempio per una finestra nascosta)."""
+    chiudere se l'utente annulla, se si bloccano o se si fermano su una domanda."""
     prima = pid_di(OFFICE_EXE[cat])
     scaduto = threading.Event()
+    domanda = []
 
     def sorveglia():
+        vista_da = None
         while not fatto.wait(0.3):
             if LAVORO.pid_office is None:
                 nuovi = pid_di(OFFICE_EXE[cat]) - prima
@@ -730,6 +832,14 @@ def converti_office(src, key, cat):
             if LAVORO.annulla.is_set() and LAVORO.pid_office:
                 termina_processo(LAVORO.pid_office)  # annullato prima che conoscessi il processo
                 return
+            if LAVORO.pid_office:
+                # una finestra di Office che aspetta una risposta: nessuno la vedrebbe, inutile aspettare
+                testo = domanda_office(LAVORO.pid_office)
+                vista_da = (vista_da or time.monotonic()) if testo else None
+                if testo and time.monotonic() - vista_da > 2:
+                    domanda.append(testo)
+                    termina_processo(LAVORO.pid_office)
+                    return
             if time.monotonic() - inizio > OFFICE_TEMPO_MAX:
                 scaduto.set()
                 if LAVORO.pid_office:
@@ -737,12 +847,12 @@ def converti_office(src, key, cat):
                 return
     fatto, inizio = threading.Event(), time.monotonic()
     threading.Thread(target=sorveglia, daemon=True).start()
-    out = None
     try:
-        out = _converti_office(src, key, cat)
-        return out
+        return _converti_office(src, key, cat, out)
     except Exception as e:
         LAVORO.controlla()
+        if domanda:
+            raise RuntimeError(t("Office si è fermato su una domanda: «{testo}»", testo=accorcia(domanda[0], 90))) from e
         if scaduto.is_set():
             raise RuntimeError(t("Office non risponde: conversione interrotta dopo 3 minuti")) from e
         raise
@@ -751,17 +861,21 @@ def converti_office(src, key, cat):
         LAVORO.pid_office = None
 
 
-def _converti_office(src, key, cat):
+def _converti_office(src, key, cat, out=None):
     import pythoncom
     import win32com.client as win32
     pythoncom.CoInitialize()
     src = os.path.abspath(src)
-    out = uscita(src, key)
+    out = out or uscita(src, key)
     try:
         if cat == "word":
             app = win32.DispatchEx("Word.Application")
             app.Visible = False
             app.DisplayAlerts = 0
+            if src.lower().endswith(".pdf"):
+                import winreg
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Microsoft\Office\{app.Version}\Word\Options") as k:
+                    winreg.SetValueEx(k, "DisableConvertPdfWarning", 0, winreg.REG_DWORD, 1)
             try:
                 d = app.Documents.Open(src, ConfirmConversions=False, ReadOnly=True, AddToRecentFiles=False)
                 d.SaveAs2(out, FileFormat={"pdf": 17, "txt": 7, "rtf": 6, "docx": 16}[key])
@@ -1556,6 +1670,14 @@ class App:
             self._tipi(files)
             return
         cat, opz = opzioni_per(files)
+        if not opz:
+            if POPUP:
+                self.stato = "fatto"
+                self._attesa(False)
+                self.root.after(3500, self.chiudi)
+            self._testi(t("Serve Microsoft Office"), t("per convertire {cosa}", cosa=NOMI_TIPO.get(cat, cat)),
+                        piede=t("Esc per ricominciare"))
+            return
         self.files, self.cat, self.opz, self.principali, self.gruppo = files, cat, opz, opz, None
         self.stato, self.hover = "ruota", None
         self._ruota()

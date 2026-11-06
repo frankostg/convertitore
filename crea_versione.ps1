@@ -27,10 +27,11 @@ Write-Host "== Convertitore $v =="
 & $py -m PyInstaller "$qui\app.py" --name Convertitore --noconfirm --windowed --onedir --log-level WARN `
     --icon "$qui\convertitore.ico" --add-data "$qui\convertitore.ico;." `
     --collect-all tkinterdnd2 --collect-all pillow_heif `
-    --hidden-import win32com.client --hidden-import pythoncom --hidden-import aggiornamento --hidden-import pdf2docx --exclude-module fire `
+    --hidden-import win32com.client --hidden-import pythoncom --hidden-import aggiornamento --exclude-module pymupdf --exclude-module fitz --exclude-module pdf2docx --exclude-module cv2 `
     --distpath "$qui\dist" --workpath "$lavoro\work" --specpath "$lavoro"
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller non e' riuscito" }
 Copy-Item (Get-Command ffmpeg).Source "$qui\dist\Convertitore\ffmpeg.exe" -Force
+Copy-Item "$qui\licenze-terze-parti.txt" "$qui\dist\Convertitore\licenze-terze-parti.txt" -Force
 
 # 2. installatori
 & $iscc /Q "/DVersione=$v" "$qui\installatore.iss"; if ($LASTEXITCODE -ne 0) { throw "Setup non creato" }

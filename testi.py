@@ -55,6 +55,7 @@ EN = {
     "Parte con Windows": "Starts with Windows",
     "Solo quando la apro": "Only when I open it",
     "Chiudi": "Close",
+    "Licenze di terze parti": "Third-party licences",
 }
 
 EN.update({
@@ -146,6 +147,11 @@ EN.update({
     "Nascondi per 30 minuti": "Hide for 30 minutes",
     "Chiudi la sfera": "Close the orb",
     "Versione {v}": "Version {v}",
+    "----- pagina {n} -----": "----- page {n} -----",
+    "Serve Microsoft Office": "Microsoft Office needed",
+    "per convertire {cosa}": "to convert {cosa}",
+    "Office si è fermato su una domanda: «{testo}»": "Office stopped on a question: “{testo}”",
+    "Word non è riuscito a convertire il PDF: serve Office attivato e aggiornato": "Word couldn't convert the PDF: Office must be activated and up to date",
 })
 
 # fette della ruota
