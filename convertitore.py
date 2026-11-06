@@ -160,9 +160,83 @@ def percorso_libero(cartella, nome, ext):
 CARTELLA_USCITA = None  # se impostata (immagine dagli appunti) i file finiscono qui
 
 
+class Annullato(BaseException):
+    """Conversione fermata da chi usa il programma. Deriva da BaseException apposta:
+    le librerie che ignorano gli errori (pdf2docx salta le pagine difettose) non la fermano."""
+
+
+class Lavoro:
+    """Stato della conversione in corso, condiviso tra la ruota e chi converte:
+    avanzamento (0..1), richiesta di annullare, processi esterni da fermare."""
+
+    def __init__(self, n=1):
+        self.annulla = threading.Event()
+        self.n, self.i = max(1, n), 0
+        self.frazione = None      # None = non si sa quanto manca (rotellina)
+        self.nome = ""
+        self.processo = None      # ffmpeg in corso
+        self.pid_office = None    # Word/Excel/PowerPoint aperto da noi
+        self.spostati = False     # file salvati sul Desktop perche' la cartella era protetta
+
+    def controlla(self):
+        if self.annulla.is_set():
+            raise Annullato()
+
+    def parte(self, frac):
+        """Avanzamento del file corrente (0..1) -> avanzamento totale."""
+        self.frazione = (self.i + max(0.0, min(1.0, frac))) / self.n
+        self.controlla()
+
+    def ferma(self):
+        """Chiamata dalla ruota (clic al centro o Esc): ferma subito i processi esterni."""
+        self.annulla.set()
+        if self.processo is not None:
+            try:
+                self.processo.kill()
+            except OSError:
+                pass
+        if self.pid_office:
+            termina_processo(self.pid_office)
+
+
+LAVORO = Lavoro()
+
+
+def termina_processo(pid):
+    subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"], capture_output=True, creationflags=0x08000000)
+
+
+_scrivibili = {}
+
+
+def cartella_scrivibile(cartella):
+    """Prova davvero a scrivere: os.access non basta su OneDrive e cartelle protette."""
+    if cartella not in _scrivibili:
+        prova = os.path.join(cartella, f".convertitore-prova-{os.getpid()}")
+        try:
+            with open(prova, "w") as fh:
+                fh.write("ok")
+            os.remove(prova)
+            _scrivibili[cartella] = True
+        except OSError:
+            _scrivibili[cartella] = False
+    return _scrivibili[cartella]
+
+
+def cartella_per(src):
+    """Dove salvare: accanto all'originale, oppure sul Desktop se li' non si puo' scrivere."""
+    if CARTELLA_USCITA:
+        return CARTELLA_USCITA
+    cartella = os.path.dirname(os.path.abspath(src))
+    if cartella_scrivibile(cartella):
+        return cartella
+    LAVORO.spostati = True
+    return cartella_desktop()
+
+
 def uscita(src, ext, suffisso=""):
     base = os.path.splitext(os.path.basename(src))[0] + suffisso
-    return percorso_libero(CARTELLA_USCITA or os.path.dirname(src), base, ext)
+    return percorso_libero(cartella_per(src), base, ext)
 
 
 def cartella_desktop():
@@ -323,16 +397,8 @@ def chiave_nome(f):
 def converti_pdf(src, key):
     import pymupdf
     if key == "word":
-        # pdf2docx: funziona anche senza Office installato
-        from pdf2docx import Converter
-        out = uscita(src, "docx")
-        cv = Converter(src)
-        try:
-            cv.convert(out)
-        finally:
-            cv.close()
-        return [out]
-    doc = pymupdf.open(src)
+        return pdf_in_word(src)
+    doc = apri_pdf(src)
     if key == "leggero":
         out = uscita(src, "pdf", " (leggero)")
         try:
@@ -351,6 +417,7 @@ def converti_pdf(src, key):
         delta = {"destra": 90, "sinistra": 270, "r180": 180}[key]
         for page in doc:
             page.set_rotation((page.rotation + delta) % 360)
+            LAVORO.parte((page.number + 1) / len(doc) * 0.8)
         out = uscita(src, "pdf", " (ruotato)")
         doc.save(out, garbage=3, deflate=True)
         return [out]
@@ -361,9 +428,21 @@ def converti_pdf(src, key):
                 if i:
                     fh.write("\n\n----- pagina %d -----\n\n" % (i + 1))
                 fh.write(page.get_text())
+                try:
+                    LAVORO.parte((i + 1) / len(doc))
+                except Annullato:
+                    fh.close()
+                    os.remove(out)
+                    raise
         return [out]
     outs = []
     for i, page in enumerate(doc):
+        try:
+            LAVORO.parte(i / len(doc))
+        except Annullato:
+            for o in outs:  # niente pagine a meta': tolgo quelle gia' create di questo PDF
+                os.remove(o)
+            raise
         suff = "" if len(doc) == 1 else f" - pagina {i + 1}"
         out = uscita(src, key, suff)
         pix = page.get_pixmap(dpi=170)
@@ -375,6 +454,69 @@ def converti_pdf(src, key):
     return outs
 
 
+def apri_pdf(src):
+    import pymupdf
+    try:
+        doc = pymupdf.open(src)
+    except Exception as e:
+        raise RuntimeError("PDF danneggiato o non leggibile") from e
+    if doc.needs_pass:
+        raise RuntimeError("PDF protetto da password: aprilo, togli la password e riprova")
+    return doc
+
+
+class _AvanzamentoWord:
+    """pdf2docx scrive "(3/10) Page 3" mentre lavora: lo uso come avanzamento e,
+    se l'utente annulla, interrompo la conversione da qui."""
+
+    def __init__(self):
+        import logging
+        self.fase = 0
+
+        class Gestore(logging.Handler):
+            def emit(gestore, record):
+                import re
+                testo = record.getMessage()
+                if "[4/4]" in testo:
+                    self.fase = 1
+                m = re.match(r"\((\d+)/(\d+)\)", testo)
+                if m:
+                    LAVORO.parte(0.5 * self.fase + 0.5 * int(m.group(1)) / int(m.group(2)))
+                else:
+                    LAVORO.controlla()
+        self.gestore = Gestore()
+
+
+def pdf_in_word(src):
+    """PDF -> Word modificabile (pdf2docx: funziona anche senza Office)."""
+    import logging
+    apri_pdf(src).close()  # controlla subito password e file danneggiati
+    from pdf2docx import Converter
+    out = uscita(src, "docx")
+    radice = logging.getLogger()
+    av = _AvanzamentoWord()
+    radice.addHandler(av.gestore)
+    livello = radice.level
+    radice.setLevel(logging.INFO)
+    cv = None
+    try:
+        cv = Converter(src)
+        cv.convert(out)
+    except BaseException:
+        if os.path.exists(out):
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+        raise
+    finally:
+        radice.removeHandler(av.gestore)
+        radice.setLevel(livello)
+        if cv is not None:
+            cv.close()
+    return [out]
+
+
 def unisci_pdf(files):
     """Mette PDF e immagini (in ordine di nome) in un unico PDF."""
     import io
@@ -382,9 +524,12 @@ def unisci_pdf(files):
     from PIL import ImageOps
     files = sorted(files, key=chiave_nome)
     out_doc = pymupdf.open()
-    for f in files:
+    for k, f in enumerate(files):
+        LAVORO.frazione = k / len(files)
+        LAVORO.nome = os.path.basename(f)
+        LAVORO.controlla()
         if categoria(f) == "pdf":
-            with pymupdf.open(f) as d:
+            with apri_pdf(f) as d:
                 out_doc.insert_pdf(d)
         else:
             buf = io.BytesIO()
@@ -392,7 +537,7 @@ def unisci_pdf(files):
             with pymupdf.open("pdf", buf.getvalue()) as d:
                 out_doc.insert_pdf(d)
     nome = "Immagini unite" if all(categoria(f) == "immagine" for f in files) else "PDF unito"
-    out = percorso_libero(CARTELLA_USCITA or os.path.dirname(files[0]), nome, "pdf")
+    out = percorso_libero(cartella_per(files[0]), nome, "pdf")
     out_doc.save(out, garbage=3, deflate=True)
     return [out]
 
@@ -418,10 +563,22 @@ LEGGERO_VIDEO = ["-vf", "scale=w='min(1280,iw)':h='min(1280,ih)':force_original_
 LEGGERO_AUDIO = ["-vn", "-c:a", "libmp3lame", "-b:a", "96k"]
 
 
+def esamina_media(ff, src):
+    """(durata in secondi o None, ha audio?, ha video?) dall'intestazione che ffmpeg stampa."""
+    import re
+    r = subprocess.run([ff, "-hide_banner", "-i", src], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", creationflags=NO_WINDOW)
+    testo = r.stderr or ""
+    m = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", testo)
+    durata = (int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) or None) if m else None
+    flussi = re.findall(r"Stream #\S+.*?: (Audio|Video):", testo)
+    return durata, "Audio" in flussi, "Video" in flussi
+
+
 def converti_ffmpeg(src, key):
     ff = trova_ffmpeg()
     if not ff:
-        raise RuntimeError("ffmpeg non trovato: installalo con  winget install Gyan.FFmpeg")
+        raise RuntimeError("manca ffmpeg: reinstalla il Convertitore")
     if key == "leggero":
         video = categoria(src) == "video"
         out = uscita(src, "mp4" if video else "mp3", " (leggero)")
@@ -429,18 +586,96 @@ def converti_ffmpeg(src, key):
     else:
         out = uscita(src, key)
         argomenti = FFMPEG_ARGS[key]
-    cmd = [ff, "-hide_banner", "-loglevel", "error", "-y", "-i", src, *argomenti, out]
-    r = subprocess.run(cmd, capture_output=True, text=True, creationflags=NO_WINDOW)
-    if r.returncode != 0:
+    durata, ha_audio, ha_video = esamina_media(ff, src)
+    solo_audio = "-vn" in argomenti
+    if solo_audio and not ha_audio and (ha_video or durata):
+        raise RuntimeError("questo video non contiene audio")
+    cmd = [ff, "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y", "-i", src, *argomenti, out]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                            text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
+    LAVORO.processo = proc
+    errori = []
+    lettore = threading.Thread(target=lambda: errori.extend(proc.stderr.read().splitlines()), daemon=True)
+    lettore.start()
+    try:
+        for riga in proc.stdout:
+            if LAVORO.annulla.is_set():
+                proc.kill()
+                break
+            if riga.startswith("out_time_us=") and durata:
+                try:
+                    LAVORO.frazione = (LAVORO.i + max(0.0, min(1.0, int(riga.split("=", 1)[1]) / 1e6 / durata))) / LAVORO.n
+                except ValueError:
+                    pass
+        proc.wait()
+    finally:
+        LAVORO.processo = None
+    lettore.join(timeout=2)
+    if LAVORO.annulla.is_set() or proc.returncode != 0:
         if os.path.exists(out):
-            os.remove(out)
-        raise RuntimeError((r.stderr or "errore ffmpeg").strip().splitlines()[-1])
+            try:
+                os.remove(out)
+            except OSError:
+                pass
+        LAVORO.controlla()  # annullato: esce da qui
+        raise RuntimeError("ffmpeg: " + (errori[-1] if errori else "errore sconosciuto"))
     if key == "leggero":
         troppo_grande(src, out)
     return [out]
 
 
+OFFICE_TEMPO_MAX = 180  # secondi per file: oltre, Office viene chiuso (si e' bloccato)
+OFFICE_EXE = {"word": "WINWORD.EXE", "excel": "EXCEL.EXE", "powerpoint": "POWERPNT.EXE"}
+
+
+def pid_di(nome_exe):
+    r = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {nome_exe}", "/FO", "CSV", "/NH"],
+                       capture_output=True, text=True, creationflags=NO_WINDOW)
+    pids = set()
+    for riga in r.stdout.splitlines():
+        parti = riga.strip().strip('"').split('","')
+        if len(parti) > 1 and parti[1].isdigit():
+            pids.add(int(parti[1]))
+    return pids
+
+
 def converti_office(src, key, cat):
+    """Word/Excel/PowerPoint aperti di nascosto. Ricordo il loro processo per poterli
+    chiudere se l'utente annulla o se si bloccano (per esempio per una finestra nascosta)."""
+    prima = pid_di(OFFICE_EXE[cat])
+    scaduto = threading.Event()
+
+    def sorveglia():
+        while not fatto.wait(0.3):
+            if LAVORO.pid_office is None:
+                nuovi = pid_di(OFFICE_EXE[cat]) - prima
+                if nuovi:
+                    LAVORO.pid_office = min(nuovi)
+            if LAVORO.annulla.is_set() and LAVORO.pid_office:
+                termina_processo(LAVORO.pid_office)  # annullato prima che conoscessi il processo
+                return
+            if time.monotonic() - inizio > OFFICE_TEMPO_MAX:
+                scaduto.set()
+                if LAVORO.pid_office:
+                    termina_processo(LAVORO.pid_office)
+                return
+    fatto, inizio = threading.Event(), time.monotonic()
+    threading.Thread(target=sorveglia, daemon=True).start()
+    out = None
+    try:
+        out = _converti_office(src, key, cat)
+        return out
+    except Exception as e:
+        LAVORO.controlla()
+        if scaduto.is_set():
+            raise RuntimeError("Office non risponde: conversione interrotta dopo 3 minuti") from e
+        raise
+    finally:
+        fatto.set()
+        LAVORO.pid_office = None
+
+
+def _converti_office(src, key, cat):
     import pythoncom
     import win32com.client as win32
     pythoncom.CoInitialize()
@@ -485,14 +720,83 @@ def converti_office(src, key, cat):
     return [out]
 
 
-def converti(files, cat, key, avanzamento):
-    """Converte tutti i file. Restituisce (lista output, lista errori)."""
-    if key == "unisci":
-        return unisci_pdf(files), []
+REGISTRO = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Convertitore", "errori.log")
+
+
+def registra_errore(f, key, e):
+    """Dettagli tecnici nel registro (per l'assistenza); all'utente va solo la frase chiara."""
+    import traceback
+    try:
+        os.makedirs(os.path.dirname(REGISTRO), exist_ok=True)
+        if os.path.exists(REGISTRO) and os.path.getsize(REGISTRO) > 1_000_000:
+            os.replace(REGISTRO, REGISTRO + ".1")
+        with open(REGISTRO, "a", encoding="utf-8") as fh:
+            fh.write(f"\n{time.strftime('%Y-%m-%d %H:%M:%S')}  {key}  {f}\n")
+            fh.write("".join(traceback.format_exception(e)))
+    except OSError:
+        pass
+
+
+def messaggio(e):
+    """Traduce un errore tecnico in una frase che si capisce."""
+    testo = str(e)
+    basso = testo.lower()
+    nome = type(e).__name__
+    if isinstance(e, FileNotFoundError):
+        return "file non trovato: è stato spostato o cancellato?"
+    if isinstance(e, PermissionError):
+        return "file in uso da un altro programma: chiudilo e riprova"
+    if isinstance(e, MemoryError):
+        return "file troppo grande per la memoria del PC"
+    if nome == "UnidentifiedImageError" or "cannot identify image" in basso:
+        return "immagine danneggiata o di un tipo non riconosciuto"
+    if nome == "DecompressionBombError":
+        return "immagine troppo grande (oltre i limiti di sicurezza)"
+    if nome == "com_error":
+        return "Office non è riuscito ad aprire il file (serve Microsoft Office installato)"
+    if testo.startswith("ffmpeg: "):
+        dettaglio = basso
+        if "does not contain any stream" in dettaglio or "matches no streams" in dettaglio:
+            return "il file non contiene la traccia richiesta (per esempio un video senza audio)"
+        if "invalid data" in dettaglio or "moov atom not found" in dettaglio or "could not find codec" in dettaglio:
+            return "file audio/video danneggiato o incompleto"
+        if "no space left" in dettaglio:
+            return "spazio sul disco esaurito"
+        if "permission denied" in dettaglio:
+            return "impossibile scrivere il file: cartella protetta o file aperto"
+        return "conversione audio/video non riuscita"
+    if "no space left" in basso or getattr(e, "errno", None) == 28:
+        return "spazio sul disco esaurito"
+    if isinstance(e, RuntimeError):
+        return testo  # messaggi gia' scritti per l'utente
+    return "errore imprevisto (dettagli nel registro errori)"
+
+
+def converti(files, cat, key, avanzamento=None, lavoro=None):
+    """Converte tutti i file. Restituisce (lista output, lista errori).
+    Se l'utente annulla, si ferma e restituisce cio' che era gia' pronto."""
+    global LAVORO
+    LAVORO = lavoro or Lavoro(len(files))
+    LAVORO.n = 1 if key == "unisci" else len(files)
     outs, errori = [], []
-    for i, f in enumerate(files):
-        avanzamento(i, len(files), os.path.basename(f))
+    if key == "unisci":
         try:
+            outs = unisci_pdf(files)
+        except Annullato:
+            pass
+        except Exception as e:  # noqa: BLE001
+            registra_errore(files[0], key, e)
+            errori.append(messaggio(e))
+        return outs, errori
+    for i, f in enumerate(files):
+        LAVORO.i, LAVORO.nome = i, os.path.basename(f)
+        LAVORO.frazione = i / LAVORO.n if LAVORO.n > 1 else None
+        if avanzamento:
+            avanzamento(i, len(files), os.path.basename(f))
+        try:
+            LAVORO.controlla()
+            if not os.path.exists(f):
+                raise FileNotFoundError(f)
             if cat == "immagine":
                 outs += converti_immagine(f, key)
             elif cat == "pdf":
@@ -501,8 +805,11 @@ def converti(files, cat, key, avanzamento):
                 outs += converti_ffmpeg(f, key)
             else:
                 outs += converti_office(f, key, cat)
+        except Annullato:
+            break
         except Exception as e:  # noqa: BLE001
-            errori.append(f"{os.path.basename(f)}: {e}")
+            registra_errore(f, key, e)
+            errori.append(f"{os.path.basename(f)}: {messaggio(e)}")
     return outs, errori
 
 
@@ -835,7 +1142,7 @@ class App:
         self.cv.bind("<Motion>", self._muovi)
         self.cv.bind("<Button-1>", self._clic)
         self.cv.bind("<Button-3>", lambda e: self.reset())
-        root.bind("<Escape>", lambda e: self.reset())
+        root.bind("<Escape>", lambda e: self._annulla() if self.stato == "lavoro" else self.reset())
 
         self.cache = {}
         self.hover = None
@@ -844,6 +1151,7 @@ class App:
         self.gruppo, self.appunti = None, None
         self.risultati = []
         self.spin = None
+        self.lavoro = None
         self.angolo = 0
         if POPUP:
             # finestra a strati: la disegna Windows con bordi morbidi veri
@@ -1013,14 +1321,23 @@ class App:
                 y += alt_riga
             y += gap
         if self.stato == "lavoro":
-            # rotellina disegnata in alta risoluzione e poi ridotta: bordi lisci
+            # anello disegnato in alta risoluzione e poi ridotto: bordi lisci
             r = R_IN - 12
             k = 3
             lato = int((2 * r + 8) * Z)
             strato = Image.new("RGBA", (lato * k, lato * k), (0, 0, 0, 0))
             m = 4 * Z * k
-            ImageDraw.Draw(strato).arc([m, m, lato * k - m, lato * k - m], -self.angolo - 80, -self.angolo,
-                                       fill=COLORI[self.cat] + (255,), width=int(3 * Z * k))
+            dd = ImageDraw.Draw(strato)
+            col = COLORI[self.cat]
+            frazione = self.lavoro.frazione if self.lavoro else None
+            if frazione is None:
+                # non si sa quanto manca: rotellina
+                dd.arc([m, m, lato * k - m, lato * k - m], -self.angolo - 80, -self.angolo, fill=col + (255,), width=int(3 * Z * k))
+            else:
+                # quanto manca: binario tenue + arco pieno che cresce in senso orario dall'alto
+                dd.arc([m, m, lato * k - m, lato * k - m], 0, 360, fill=col + (40,), width=int(3 * Z * k))
+                if frazione > 0.002:
+                    dd.arc([m, m, lato * k - m, lato * k - m], -90, -90 + 360 * frazione, fill=col + (255,), width=int(3 * Z * k))
             strato = strato.resize((lato, lato), Image.LANCZOS)
             img.alpha_composite(strato, (int(CX * Z - lato / 2), int(CY * Z - lato / 2)))
         if self.animando:
@@ -1217,6 +1534,9 @@ class App:
         elif self.stato == "fatto":
             dentro = math.hypot(e.x - CX, e.y - CY) < R_IN
             self.cv.configure(cursor="hand2" if dentro and self.risultati else "")
+        elif self.stato == "lavoro":
+            dentro = math.hypot(e.x - CX, e.y - CY) < R_IN
+            self.cv.configure(cursor="hand2" if dentro else "watch")
 
     def _clic(self, e):
         e.x, e.y = e.x / Z, e.y / Z
@@ -1254,6 +1574,9 @@ class App:
                 self._testi_file()
             elif math.hypot(e.x - CX, e.y - CY) > R_OUT + 30:
                 self.reset()
+        elif self.stato == "lavoro":
+            if centro:
+                self._annulla()
         elif self.stato == "fatto":
             if math.hypot(e.x - CX, e.y - CY) < R_IN and self.risultati:
                 mostra_in_cartella(self.risultati)
@@ -1288,15 +1611,46 @@ class App:
         self._ruota(spenta=True)
         self.etichetta = ETICHETTE.get(key, key.upper())
         if key in DESCRIZIONI:
-            self._testi(DESCRIZIONI[key], "", "", piede="Attendi, non chiudere la finestra")
+            self._testi(DESCRIZIONI[key], "", "", piede="Clic al centro o Esc per annullare")
         else:
-            self._testi("Converto…", f"in {self.etichetta}", "", piede="Attendi, non chiudere la finestra")
+            self._testi(f"Converto in {self.etichetta}…", "", "", piede="Clic al centro o Esc per annullare")
         self.azione = key in AZIONI
         self.angolo = 0
+        self.lavoro = Lavoro(len(self.files))
+        self.cv.itemconfigure(self.c3, text="clic qui per annullare")
+        self._impila()
+        self._ultimo_testo = None
         self._gira()
         threading.Thread(target=self._lavora, args=(key,), daemon=True).start()
 
+    def _annulla(self):
+        """Clic al centro o Esc mentre converte."""
+        if self.stato != "lavoro" or self.lavoro is None or self.lavoro.annulla.is_set():
+            return
+        self.lavoro.ferma()
+        self._testi("Annullo…", "", "")
+        self.cv.itemconfigure(self.c1, fill="#fbbf24")
+        self._presenta() if POPUP else None
+
+    def _testo_avanzamento(self):
+        """Percentuale (e "2 di 5") sotto il titolo, aggiornata mentre lavora."""
+        lv = self.lavoro
+        if lv is None or lv.annulla.is_set():
+            return
+        righe = []
+        if lv.frazione is not None:
+            righe.append(f"{int(lv.frazione * 100)}%")
+        if lv.n > 1:
+            righe.append(f"{min(lv.i + 1, lv.n)} di {lv.n} · {accorcia(lv.nome, 18)}")
+        testo = "\n".join(righe)
+        if testo != self._ultimo_testo:
+            self._ultimo_testo = testo
+            self.cv.itemconfigure(self.c2, text=testo)
+            self._impila()
+
     def _gira(self):
+        if self.stato == "lavoro":
+            self._testo_avanzamento()
         if POPUP:
             if self.stato == "lavoro":
                 self.angolo = (self.angolo - 12) % 360
@@ -1316,16 +1670,11 @@ class App:
         self.root.after(30, self._gira)
 
     def _lavora(self, key):
-        def avanz(i, n, nome):
-            if n > 1:
-                def aggiorna():
-                    self.cv.itemconfigure(self.c3, text=f"{i + 1} di {n}\n{accorcia(nome, 24)}")
-                    self._impila()
-                self.root.after(0, aggiorna)
         try:
-            outs, errori = converti(self.files, self.cat, key, avanz)
+            outs, errori = converti(self.files, self.cat, key, lavoro=self.lavoro)
         except Exception as ex:  # noqa: BLE001
-            outs, errori = [], [str(ex)]
+            registra_errore(self.files[0] if self.files else "", key, ex)
+            outs, errori = [], [messaggio(ex)]
         self.root.after(0, lambda: self._fine(outs, errori))
 
     def _fine(self, outs, errori):
@@ -1333,11 +1682,21 @@ class App:
         self.risultati = outs
         self.cv.configure(cursor="")
         self._ruota(spenta=True)
-        if outs and not errori:
+        annullato = self.lavoro is not None and self.lavoro.annulla.is_set()
+        spostati = self.lavoro is not None and self.lavoro.spostati
+        if annullato:
+            self._testi("Annullato", f"{len(outs)} file già pronti" if outs else "nessun file creato",
+                        "clicca qui per la cartella" if outs else "",
+                        piede="Clicca fuori o premi Esc per ricominciare")
+            self.cv.itemconfigure(self.c1, fill="#fbbf24")
+            self._presenta()
+            if POPUP:
+                self.root.after(2200, self._chiudi_dopo)
+        elif outs and not errori:
             n = len(outs)
             self._testi("✓  Fatto", (f"{n} file pronti" if self.azione else f"{n} file {self.etichetta}") if n > 1
                         else accorcia(os.path.basename(outs[0]), 24),
-                        "clicca qui per\naprire la cartella",
+                        "salvato sul Desktop:\ncartella protetta" if spostati else "clicca qui per\naprire la cartella",
                         piede="Trascina altri file o clicca fuori per ricominciare")
             self.cv.itemconfigure(self.c1, fill="#4ade80")
             self._presenta()
@@ -1345,7 +1704,9 @@ class App:
                 self.root.after(2500, self._chiudi_dopo)
         else:
             msg = errori[0] if errori else "nessun file creato"
-            self._testi("⚠  Errore" if not outs else f"⚠  {len(errori)} errori", accorcia(msg, 90),
+            if len(errori) > 1:
+                msg += f"\n(+ altri {len(errori) - 1})"
+            self._testi("⚠  Errore" if not outs else f"⚠  {len(errori)} errori", accorcia(msg, 110),
                         "clicca qui per la cartella" if outs else "",
                         piede="Clicca fuori o premi Esc per ricominciare")
             self.cv.itemconfigure(self.c1, fill="#fb7185")
