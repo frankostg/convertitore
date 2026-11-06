@@ -871,27 +871,53 @@ class App:
 
     # -- modalità popup
     def _anima(self, verso, fine=None):
-        """Apertura (verso +1): cresce dal 90% e compare. Chiusura (-1): si ritira e svanisce.
-        Va a tempo, non a fotogrammi: resta fluida anche se un passo e' piu' lento."""
-        t0, durata = time.perf_counter(), (0.24 if verso > 0 else 0.17)
+        """Apertura (+1): la ruota cresce dal centro con un leggero rimbalzo e compare.
+        Chiusura (-1): si ritira e svanisce.
+        Prima prepara il fotogramma (la parte lenta), poi fa partire l'orologio: cosi'
+        l'animazione si vede tutta, anche se il primo disegno richiede tempo."""
+        durata = 0.42 if verso > 0 else 0.28
         self.animando, self._pronta = True, None
+        if verso > 0:
+            self.scala, self.opacita = 0.6, 0.0
+        self._presenta()  # prepara l'immagine (con opacita' 0 in apertura: ancora invisibile)
 
-        def passo():
-            t = min(1.0, (time.perf_counter() - t0) / durata)
-            if verso > 0:
-                e = 1 - (1 - t) ** 3            # parte veloce e si posa piano
-                self.scala, self.opacita = 0.9 + 0.1 * e, e
+        def parti():
+            t0 = time.perf_counter()
+
+            def passo():
+                t = min(1.0, (time.perf_counter() - t0) / durata)
+                if verso > 0:
+                    c1 = 1.3                            # "rimbalzo": supera di poco e torna
+                    e = 1 + (c1 + 1) * (t - 1) ** 3 + c1 * (t - 1) ** 2
+                    self.scala = 0.6 + 0.4 * e
+                    self.opacita = min(1.0, t * 2.2)
+                else:
+                    e = t * t * (3 - 2 * t)             # parte piano, accelera, si ferma dolce
+                    self.scala = 1 - 0.25 * e
+                    self.opacita = 1 - e
+                self._presenta()
+                if t < 1:
+                    self.root.after(4, passo)
+                    return
+                self.animando, self._pronta = False, None
+                self.scala = 1.0
+                if fine:
+                    fine()
+            passo()
+        if verso > 0:
+            # aspetta che Windows abbia davvero mostrato la finestra
+            self.root.after(30, lambda: self._quando_visibile(parti))
+        else:
+            parti()
+
+    def _quando_visibile(self, poi, tentativi=40):
+        try:
+            if ctypes.windll.user32.IsWindowVisible(self.hwnd) or tentativi <= 0:
+                poi()
             else:
-                e = t * t                       # parte piano e accelera via
-                self.scala, self.opacita = 1 - 0.07 * e, 1 - e
-            self._presenta()
-            if t < 1:
-                self.root.after(4, passo)
-                return
-            self.animando, self._pronta = False, None
-            if fine:
-                fine()
-        passo()
+                self.root.after(10, lambda: self._quando_visibile(poi, tentativi - 1))
+        except tk.TclError:
+            pass
 
     def _perso_fuoco(self):
         try:
@@ -1010,11 +1036,16 @@ class App:
     def _fotogramma(self, pronta):
         """Apertura/chiusura: ruota in scala attorno al suo centro, con dissolvenza."""
         img = pronta
-        if self.scala < 0.999:
+        if abs(self.scala - 1) > 0.001:
             w, h = pronta.size
-            piccola = pronta.resize((max(1, int(w * self.scala)), max(1, int(h * self.scala))), Image.BILINEAR)
+            nw, nh = max(1, round(w * self.scala)), max(1, round(h * self.scala))
+            piccola = pronta.resize((nw, nh), Image.BILINEAR)
+            ox, oy = round(CX * Z * (1 - self.scala)), round(CY * Z * (1 - self.scala))
             img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-            img.paste(piccola, (int(CX * Z * (1 - self.scala)), int(CY * Z * (1 - self.scala))))
+            if self.scala < 1:
+                img.paste(piccola, (ox, oy))
+            else:  # rimbalzo oltre il 100%: si ritaglia al centro
+                img.paste(piccola.crop((-ox, -oy, -ox + w, -oy + h)), (0, 0))
         try:
             self.strati.disegna(self.hwnd, img, self.opacita, img.tobytes())
         except Exception:

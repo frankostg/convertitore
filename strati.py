@@ -58,21 +58,35 @@ def premoltiplica(img):
     return Image.merge("RGBA", (b, g, r, a)).tobytes()
 
 
-def disegna(hwnd, img, opacita=1.0, dati=None):
-    """Mostra `img` (RGBA) nella finestra a strati, con opacita' complessiva 0..1."""
-    w, h = img.size
-    dati = dati if dati is not None else premoltiplica(img)
+_tele = {}  # una bitmap per finestra, riusata a ogni fotogramma (le animazioni restano fluide)
+
+
+def _tela(hwnd, w, h):
+    t = _tele.get(hwnd)
+    if t and t[0] == (w, h):
+        return t
+    if t:
+        _gdi.SelectObject(t[1], t[4])
+        _gdi.DeleteObject(t[2])
+        _gdi.DeleteDC(t[1])
     schermo = _u32.GetDC(None)
     mem = _gdi.CreateCompatibleDC(schermo)
+    _u32.ReleaseDC(None, schermo)
     info = _BMIH(ctypes.sizeof(_BMIH), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
     bits = ctypes.c_void_p()
     bmp = _gdi.CreateDIBSection(mem, ctypes.byref(info), 0, ctypes.byref(bits), None, 0)
-    ctypes.memmove(bits, dati, len(dati))
     vecchio = _gdi.SelectObject(mem, bmp)
+    _tele[hwnd] = t = ((w, h), mem, bmp, bits, vecchio)
+    return t
+
+
+def disegna(hwnd, img, opacita=1.0, dati=None):
+    """Mostra `img` (RGBA) nella finestra a strati, con opacita' complessiva 0..1.
+    `dati`: l'immagine gia' premoltiplicata (BGRA), se l'hai preparata prima."""
+    w, h = img.size
+    dati = dati if dati is not None else premoltiplica(img)
+    _, mem, _, bits, _ = _tela(hwnd, w, h)
+    ctypes.memmove(bits, dati, len(dati))
     blend = _BLEND(0, 0, max(0, min(255, int(255 * opacita))), 1)  # AC_SRC_OVER, AC_SRC_ALPHA
-    _u32.UpdateLayeredWindow(hwnd, schermo, None, ctypes.byref(wt.SIZE(w, h)), mem,
+    _u32.UpdateLayeredWindow(hwnd, None, None, ctypes.byref(wt.SIZE(w, h)), mem,
                              ctypes.byref(wt.POINT(0, 0)), 0, ctypes.byref(blend), 2)  # ULW_ALPHA
-    _gdi.SelectObject(mem, vecchio)
-    _gdi.DeleteObject(bmp)
-    _gdi.DeleteDC(mem)
-    _u32.ReleaseDC(None, schermo)
