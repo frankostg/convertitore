@@ -24,6 +24,7 @@ if getattr(sys, "frozen", False):  # installato come Convertitore.exe
 else:
     COMANDO = f'"{PYW}" "{SCRIPT}" "%1"'
 BASE = r"Software\Classes\SystemFileAssociations\.{ext}\shell\Convertitore"
+CARTELLE = r"Software\Classes\Directory\shell\Convertitore"
 
 
 def elimina_albero(radice, percorso):
@@ -43,21 +44,23 @@ def elimina_albero(radice, percorso):
 def main(rimuovi=None):
     if rimuovi is None:
         rimuovi = "--rimuovi" in sys.argv
+    from testi import t
     estensioni = sorted({e for exts in CATEGORIE.values() for e in exts})
-    for ext in estensioni:
-        chiave = BASE.format(ext=ext)
+    # ogni formato supportato + le cartelle (converte tutto quello che contengono)
+    chiavi = [BASE.format(ext=ext) for ext in estensioni] + [CARTELLE]
+    for chiave in chiavi:
         if rimuovi:
             elimina_albero(winreg.HKEY_CURRENT_USER, chiave)
             continue
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, chiave) as k:
-            winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, "Converti…")
+            winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, t("Converti…"))
             winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, ICONA)
             winreg.SetValueEx(k, "MultiSelectModel", 0, winreg.REG_SZ, "Player")
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, chiave + r"\command") as k:
             winreg.SetValueEx(k, "", 0, winreg.REG_SZ, COMANDO)
     # avvisa Esplora file che le associazioni sono cambiate
     ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
-    print(("Rimossa" if rimuovi else "Aggiunta") + f" la voce su {len(estensioni)} formati.")
+    print(("Rimossa" if rimuovi else "Aggiunta") + f" la voce su {len(estensioni)} formati e sulle cartelle.")
 
 
 if __name__ == "__main__":

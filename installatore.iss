@@ -1,4 +1,4 @@
-; Installatore del Convertitore (Inno Setup 6)
+﻿; Installatore del Convertitore (Inno Setup 6)
 ; Per rigenerarlo: prima PyInstaller (cartella dist\Convertitore con ffmpeg.exe), poi
 ;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" installatore.iss
 ; Il risultato e' installatore\Convertitore-Setup.exe (lo crea crea_versione.ps1)
@@ -27,19 +27,34 @@ WizardStyle=modern
 CloseApplications=force
 RestartApplications=no
 
+ShowLanguageDialog=no
+LanguageDetectionMethod=uilanguage
+
 [Languages]
+; lingua scelta in automatico da quella di Windows (italiano, altrimenti inglese)
+Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "italiano"; MessagesFile: "compiler:Languages\Italian.isl"
 
+[CustomMessages]
+italiano.TaskSfera=Avvia la sfera insieme a Windows (trascini i file sopra e si apre la ruota)
+english.TaskSfera=Start the orb with Windows (drop files on it and the wheel opens)
+italiano.TaskDesktop=Icona sul Desktop
+english.TaskDesktop=Desktop icon
+italiano.NomeSfera=Sfera del Convertitore
+english.NomeSfera=Converter orb
+italiano.AvviaSfera=Avvia subito la sfera
+english.AvviaSfera=Start the orb now
+
 [Tasks]
-Name: "sfera"; Description: "Avvia la sfera insieme a Windows (trascini i file sopra e si apre la ruota)"
-Name: "desktop"; Description: "Icona sul Desktop"
+Name: "sfera"; Description: "{cm:TaskSfera}"
+Name: "desktop"; Description: "{cm:TaskDesktop}"
 
 [Files]
 Source: "dist\Convertitore\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 Name: "{userprograms}\Convertitore"; Filename: "{app}\Convertitore.exe"
-Name: "{userprograms}\Sfera del Convertitore"; Filename: "{app}\Convertitore.exe"; Parameters: "--sfera"
+Name: "{userprograms}\{cm:NomeSfera}"; Filename: "{app}\Convertitore.exe"; Parameters: "--sfera"
 Name: "{userdesktop}\Convertitore"; Filename: "{app}\Convertitore.exe"; Tasks: desktop
 Name: "{usersendto}\Convertitore"; Filename: "{app}\Convertitore.exe"
 Name: "{userstartup}\Convertitore sfera"; Filename: "{app}\Convertitore.exe"; Parameters: "--sfera"; Tasks: sfera
@@ -47,7 +62,7 @@ Name: "{userstartup}\Convertitore sfera"; Filename: "{app}\Convertitore.exe"; Pa
 [Run]
 ; voce "Converti..." nel tasto destro di Esplora file
 Filename: "{app}\Convertitore.exe"; Parameters: "--registra"; Flags: runhidden waituntilterminated
-Filename: "{app}\Convertitore.exe"; Parameters: "--sfera"; Description: "Avvia subito la sfera"; Flags: nowait postinstall
+Filename: "{app}\Convertitore.exe"; Parameters: "--sfera"; Description: "{cm:AvviaSfera}"; Flags: nowait postinstall
 
 [UninstallRun]
 Filename: "{app}\Convertitore.exe"; Parameters: "--rimuovi"; Flags: runhidden waituntilterminated; RunOnceId: "RimuoviMenu"

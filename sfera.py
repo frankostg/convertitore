@@ -31,7 +31,7 @@ SCRIPT = os.path.join(QUI, "convertitore.py")
 # comando per aprire la ruota: l'exe installato, oppure Python + script
 COMANDO = [sys.executable] if FROZEN else [PYW, SCRIPT]
 sys.path.insert(0, QUI)
-from versione import NOVITA, VERSIONE  # noqa: E402
+from versione import NOVITA, NOVITA_EN, VERSIONE  # noqa: E402
 from convertitore import CATEGORIE  # noqa: E402
 
 ESTENSIONI = {e for exts in CATEGORIE.values() for e in exts}
@@ -203,7 +203,7 @@ def file_selezionati(hwnd):
             items = desktop.Document.SelectedItems()
         else:
             return []
-        return [it.Path for it in items if os.path.isfile(it.Path)]
+        return [it.Path for it in items if os.path.exists(it.Path)]  # file e cartelle
     except Exception:
         return []
 
@@ -237,8 +237,8 @@ def ascolta_scorciatoia(coda):
             coda.put(_u32.GetForegroundWindow())
 
 
-def disegna_avviso(titolo, righe):
-    """Pannello di vetro scuro con le novita' dopo un aggiornamento."""
+def disegna_avviso(titolo, righe, etichetta="NOVITÀ", numerate=False, piede="Clic per chiudere"):
+    """Pannello di vetro scuro: novita' dopo un aggiornamento, o benvenuto (passi numerati)."""
     S = 2
 
     def carattere(dim, peso):
@@ -257,7 +257,7 @@ def disegna_avviso(titolo, righe):
         riga, prima = "", True
         for p in r.split(" "):
             prova = (riga + " " + p).strip()
-            if riga and misura.textlength(prova, font=f_r) > larg - 2 * pad - 16 * Z * S:
+            if riga and misura.textlength(prova, font=f_r) > larg - 2 * pad - 22 * Z * S:
                 linee.append((riga, prima))
                 riga, prima = p, False
             else:
@@ -265,7 +265,7 @@ def disegna_avviso(titolo, righe):
         linee.append((riga, prima))
     alt_r = int(19 * Z * S)
     ombra_pad = int(14 * Z * S)
-    alt = pad + int(56 * Z * S) + alt_r * len(linee) + int(34 * Z * S)
+    alt = pad + int(56 * Z * S) + alt_r * len(linee) + int(34 * Z * S) + (int(4 * Z * S) * len(linee) if numerate else 0)
     tot = (larg + 2 * ombra_pad, alt + 2 * ombra_pad)
     from PIL import ImageFilter
     img = Image.new("RGBA", tot, (0, 0, 0, 0))
@@ -280,27 +280,35 @@ def disegna_avviso(titolo, righe):
                         outline=(255, 255, 255, 34), width=S)
     # etichetta "Novità" con sfumatura
     x, y = ox + pad, oy + pad
-    pill_w, pill_h = int(64 * Z * S), int(20 * Z * S)
+    pill_h = int(20 * Z * S)
+    pill_w = int(misura.textlength(etichetta, font=f_p) + 22 * Z * S)
     sf = Image.new("RGBA", (pill_w, pill_h))
     for k in range(pill_w):
         ImageDraw.Draw(sf).line([k, 0, k, pill_h], fill=_mescola((56, 189, 248), (167, 139, 250), k / pill_w) + (255,))
     m = Image.new("L", (pill_w, pill_h), 0)
     ImageDraw.Draw(m).rounded_rectangle([0, 0, pill_w - 1, pill_h - 1], radius=pill_h // 2, fill=255)
     img.paste(sf, (x, y), m)
-    d.text((x + pill_w / 2, y + pill_h / 2), "NOVITÀ", font=f_p, fill=(12, 14, 24, 255), anchor="mm")
+    d.text((x + pill_w / 2, y + pill_h / 2), etichetta, font=f_p, fill=(12, 14, 24, 255), anchor="mm")
     y += pill_h + int(10 * Z * S)
     d.text((x, y), titolo, font=f_t, fill=(241, 245, 255, 255))
     y += int(30 * Z * S)
     voce = 0
     for testo, prima in linee:
-        if prima:
+        if prima and numerate:
+            # passo numerato: cerchietto colorato con il numero
+            q = 8 * Z * S
+            cy = y + 10 * Z * S
+            d.ellipse([x - 2 * S, cy - q, x - 2 * S + 2 * q, cy + q], fill=COLORI[voce % len(COLORI)] + (255,))
+            d.text((x - 2 * S + q, cy), str(voce + 1), font=f_p, fill=(12, 14, 24, 255), anchor="mm")
+            voce += 1
+        elif prima:
             q = 3 * Z * S
             cy = y + 10 * Z * S
             d.ellipse([x + 2 * S, cy - q, x + 2 * S + 2 * q, cy + q], fill=COLORI[voce % len(COLORI)] + (255,))
             voce += 1
-        d.text((x + 16 * Z * S, y), testo, font=f_r, fill=(205, 213, 232, 255))
-        y += alt_r
-    d.text((x, oy + alt - pad + 4 * S), "Clic per chiudere", font=f_r, fill=(110, 120, 150, 255), anchor="ls")
+        d.text((x + (22 if numerate else 16) * Z * S, y), testo, font=f_r, fill=(205, 213, 232, 255))
+        y += alt_r + (int(4 * Z * S) if numerate else 0)
+    d.text((x, oy + alt - pad + 4 * S), piede, font=f_r, fill=(110, 120, 150, 255), anchor="ls")
     return img.resize((tot[0] // S, tot[1] // S), Image.LANCZOS)
 
 
@@ -317,6 +325,7 @@ class Sfera:
         root.attributes("-topmost", True)
         root.configure(bg=KEYHEX)
         self.lato = int(LATO * Z)
+        self.primo_avvio = not os.path.exists(CONFIG)  # prima volta su questo PC
         x, y = self._posizione()
         root.geometry(f"{self.lato}x{self.lato}+{x}+{y}")
 
@@ -345,12 +354,6 @@ class Sfera:
         self.cv.bind("<Button-3>", self._menu)
 
         self.menu = tk.Menu(root, tearoff=0)
-        self.menu.add_command(label="Apri il Convertitore", command=lambda: self._lancia([]))
-        self.menu.add_command(label="Nascondi per 30 minuti", command=self._nascondi)
-        self.menu.add_separator()
-        self.menu.add_command(label="Chiudi la sfera", command=root.destroy)
-        self.menu.add_separator()
-        self.menu.add_command(label=f"Versione {VERSIONE}", state="disabled")
         # resta sopra anche se un'altra finestra "topmost" la copre
         self._tieni_sopra()
         # aggiornamenti online: primo controllo dopo 20 secondi, poi ogni 6 ore
@@ -361,10 +364,12 @@ class Sfera:
         self.coda = queue.Queue()
         threading.Thread(target=ascolta_scorciatoia, args=(self.coda,), daemon=True).start()
         self._controlla_scorciatoia()
-        # appena aggiornata: mostra le novita'
+        # primo avvio: benvenuto; appena aggiornata: novita'
         if leggi_config().get("vista") != VERSIONE:
             scrivi_config(vista=VERSIONE)
-            if FROZEN or os.environ.get("CONVERTITORE_AVVISO"):
+            if self.primo_avvio:
+                self.root.after(2000, self._benvenuto)
+            elif FROZEN or os.environ.get("CONVERTITORE_AVVISO"):
                 self.root.after(2500, self._avviso)
 
     # -- scorciatoia
@@ -374,16 +379,28 @@ class Sfera:
                 finestra = self.coda.get_nowait()
                 if not self.occupata:
                     files = [f for f in file_selezionati(finestra)
-                             if os.path.splitext(f)[1].lower().lstrip(".") in ESTENSIONI]
+                             if os.path.isdir(f) or os.path.splitext(f)[1].lower().lstrip(".") in ESTENSIONI]
                     self._lancia(files or ["--ruota"])
         except queue.Empty:
             pass
         self.root.after(150, self._controlla_scorciatoia)
 
     # -- avviso novita'
-    def _avviso(self):
+    def _benvenuto(self):
+        from testi import t
+        self._avviso(t("Il Convertitore è pronto"), [
+            t("Trascina un file su questa sfera: si apre la ruota con i formati."),
+            t("Oppure selezionalo e premi Ctrl+Alt+C (o tasto destro, poi Converti…)."),
+            t("Il file nuovo compare accanto all'originale. Tasto destro sulla sfera per le impostazioni."),
+        ], etichetta=t("BENVENUTO"), numerate=True, durata=40_000)
+
+    def _avviso(self, titolo=None, righe=None, etichetta=None, numerate=False, durata=14_000):
         import strati
-        img = disegna_avviso(f"Convertitore aggiornato a {VERSIONE}", NOVITA)
+        from testi import lingua, t
+        if titolo is None:
+            titolo = t("Convertitore aggiornato a {v}", v=VERSIONE)
+            righe = NOVITA_EN if lingua() == "en" else NOVITA
+        img = disegna_avviso(titolo, righe, etichetta or t("NOVITÀ"), numerate, t("Clic per chiudere"))
         w, h = img.size
         top = tk.Toplevel(self.root)
         top.overrideredirect(True)
@@ -427,7 +444,7 @@ class Sfera:
 
         top.bind("<Button-1>", chiudi)
         dissolvi(0.0, 0.12)
-        top.after(14_000, dopo)
+        top.after(durata, dopo)
 
     # -- aggiornamenti online
     def _cerca_aggiornamenti(self):
@@ -546,7 +563,7 @@ class Sfera:
 
     def _drop(self, e):
         self._riposo()
-        files = [f for f in self.root.tk.splitlist(e.data) if os.path.isfile(f)]
+        files = [f for f in self.root.tk.splitlist(e.data) if os.path.exists(f)]  # anche cartelle
         if files:
             self._lancia(files)
         return e.action
@@ -557,7 +574,7 @@ class Sfera:
         except Exception:
             pass
         proc = subprocess.Popen([*COMANDO, *files], cwd=QUI)
-        if files:
+        if files and files != ["--impostazioni"]:
             self.occupata = True
             # mentre la ruota e' aperta la sfera si fa da parte, poi ricompare
             self.root.after(250, lambda: self._sfuma(-1, self.root.withdraw))
@@ -589,7 +606,7 @@ class Sfera:
             return
         # clic: ruota per i file selezionati in Esplora file / sul Desktop
         files = [f for f in file_selezionati(self.ultima_finestra)
-                 if os.path.splitext(f)[1].lower().lstrip(".") in ESTENSIONI]
+                 if os.path.isdir(f) or os.path.splitext(f)[1].lower().lstrip(".") in ESTENSIONI]
         # niente di convertibile selezionato: ruota con tutte le conversioni possibili
         self._lancia(files or ["--ruota"])
 
@@ -600,7 +617,20 @@ class Sfera:
             self.ultima_finestra = fg
 
     def _menu(self, e):
-        self.menu.tk_popup(e.x_root, e.y_root)
+        # ricostruito ogni volta: segue la lingua scelta nelle Impostazioni
+        import testi
+        testi._lingua = None
+        t = testi.t
+        m = self.menu
+        m.delete(0, "end")
+        m.add_command(label=t("Apri la ruota"), command=lambda: self._lancia(["--ruota"]))
+        m.add_command(label=t("Impostazioni…"), command=lambda: self._lancia(["--impostazioni"]))
+        m.add_separator()
+        m.add_command(label=t("Nascondi per 30 minuti"), command=self._nascondi)
+        m.add_command(label=t("Chiudi la sfera"), command=self.root.destroy)
+        m.add_separator()
+        m.add_command(label=t("Versione {v}", v=VERSIONE), state="disabled")
+        m.tk_popup(e.x_root, e.y_root)
 
     def _nascondi(self):
         self.root.withdraw()

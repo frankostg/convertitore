@@ -19,6 +19,8 @@ import tkinter as tk
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
+from testi import lingua, t
+
 try:
     from pillow_heif import register_heif_opener
     register_heif_opener()
@@ -92,6 +94,7 @@ COLORI = {
     "excel": (163, 230, 53),
     "powerpoint": (251, 113, 133),
     "unione": (251, 146, 60),
+    "unisci": (251, 146, 60),
     "appunti": (203, 213, 225),
 }
 
@@ -103,6 +106,18 @@ SOTTOTITOLI.update({k: " · ".join([d for d in DESTINAZIONI[k[4:]] if d not in A
                     for k in PANORAMICA})
 NOMI_TIPO = {"immagine": "un'immagine", "video": "un video", "audio": "un audio", "pdf": "un PDF",
              "word": "un documento", "excel": "un foglio Excel", "powerpoint": "una presentazione"}
+
+# nomi dei tipi come compaiono al centro della ruota
+NOMI_CAT = {"immagine": "immagine", "video": "video", "audio": "audio", "pdf": "PDF", "word": "documento",
+            "excel": "Excel", "powerpoint": "presentazione"}
+if lingua() == "en":
+    import testi as _testi_en
+    for _tab, _en in ((ETICHETTE, _testi_en.EN_ETICHETTE), (SOTTOTITOLI, _testi_en.EN_SOTTOTITOLI),
+                      (DESCRIZIONI, _testi_en.EN_DESCRIZIONI), (NOMI_TIPO, _testi_en.EN_NOMI_TIPO),
+                      (NOMI_CAT, _testi_en.EN_NOMI_CAT)):
+        _tab.update({k: v for k, v in _en.items() if k in _tab})
+    SOTTOTITOLI.update({k: " · ".join([d for d in DESTINAZIONI[k[4:]] if d not in AZIONI and ":" not in d][:3]) + " …"
+                        for k in PANORAMICA})
 
 ALIAS = {"jpeg": "jpg", "jfif": "jpg", "tif": "tiff", "heif": "heic"}
 
@@ -142,14 +157,65 @@ def opzioni_per(files):
     return cat, opz
 
 
+MAX_FILE = 2000  # una cartella enorme non deve bloccare la ruota
+
+
+def espandi(percorsi):
+    """Cartelle -> i file convertibili che contengono (anche nelle sottocartelle).
+    Restituisce (file convertibili, quanti file ignorati perche' non supportati)."""
+    trovati, ignorati = [], 0
+    for p in percorsi:
+        if os.path.isdir(p):
+            for radice, cartelle, nomi in os.walk(p):
+                cartelle[:] = sorted(c for c in cartelle if not c.startswith((".", "$")))
+                for n in sorted(nomi, key=chiave_nome):
+                    if n.startswith((".", "~$")):
+                        continue
+                    f = os.path.join(radice, n)
+                    if categoria(f):
+                        trovati.append(f)
+                    else:
+                        ignorati += 1
+                    if len(trovati) >= MAX_FILE:
+                        return trovati, ignorati
+        elif os.path.isfile(p):
+            if categoria(p):
+                trovati.append(p)
+            else:
+                ignorati += 1
+    return trovati, ignorati
+
+
 def opzioni_gruppo(cat, gruppo, files):
     exts = {ALIAS.get(estensione(f), estensione(f)) for f in files}
     return _filtra(GRUPPI.get(cat, {}).get(gruppo, []), exts)
 
 
 # ----------------------------------------------------------------- conversioni
+def impostazioni():
+    from impostazioni import leggi
+    return leggi()
+
+
+IMP = impostazioni()
+
+
+# quanto alleggerisce "Leggero" (Impostazioni: poco / medio / molto)
+LIVELLI = {
+    "poco": {"lato": 3200, "jpg": 86, "webp": 86, "pdf_dpi": 170, "pdf_q": 80, "video_lato": 1920, "crf": 25, "audio": "128k"},
+    "medio": {"lato": 2560, "jpg": 78, "webp": 80, "pdf_dpi": 130, "pdf_q": 70, "video_lato": 1280, "crf": 28, "audio": "96k"},
+    "molto": {"lato": 1600, "jpg": 68, "webp": 70, "pdf_dpi": 96, "pdf_q": 55, "video_lato": 854, "crf": 31, "audio": "64k"},
+}
+
+
+def livello():
+    return LIVELLI.get(IMP.get("leggero"), LIVELLI["medio"])
+
+
 def percorso_libero(cartella, nome, ext):
     out = os.path.join(cartella, f"{nome}.{ext}")
+    if IMP.get("esistente") == "sostituisci":
+        return out  # Impostazioni: sovrascrive il file convertito di prima (mai l'originale: ha un nome diverso)
     n = 1
     while os.path.exists(out):
         out = os.path.join(cartella, f"{nome} ({n}).{ext}")
@@ -227,6 +293,9 @@ def cartella_per(src):
     """Dove salvare: accanto all'originale, oppure sul Desktop se li' non si puo' scrivere."""
     if CARTELLA_USCITA:
         return CARTELLA_USCITA
+    fissa = IMP.get("cartella")
+    if fissa and os.path.isdir(fissa) and cartella_scrivibile(fissa):
+        return fissa  # Impostazioni: tutti i file convertiti in una cartella sola
     cartella = os.path.dirname(os.path.abspath(src))
     if cartella_scrivibile(cartella):
         return cartella
@@ -250,7 +319,7 @@ def troppo_grande(src, out):
     """Per "leggero": se il risultato non pesa meno dell'originale non serve a niente."""
     if os.path.getsize(out) >= os.path.getsize(src) * 0.97:
         os.remove(out)
-        raise RuntimeError("è già leggero, non si riduce di più")
+        raise RuntimeError(t("è già leggero, non si riduce di più"))
 
 
 def mostra_in_cartella(files):
@@ -334,13 +403,14 @@ def modifica_immagine(src, key):
     im.seek(0)
     im = ImageOps.exif_transpose(im)  # le foto del telefono vanno girate come dice l'EXIF
     if key == "leggero":
-        im.thumbnail((2560, 2560), Image.LANCZOS)
+        lv = livello()
+        im.thumbnail((lv["lato"], lv["lato"]), Image.LANCZOS)
         if ha_trasparenza(im):
-            out = uscita(src, "webp", " (leggera)")
-            im.save(out, quality=80, method=6)
+            out = uscita(src, "webp", t(" (leggera)"))
+            im.save(out, quality=lv["webp"], method=6)
         else:
-            out = uscita(src, "jpg", " (leggera)")
-            su_bianco(im).save(out, "JPEG", quality=78, optimize=True, progressive=True)
+            out = uscita(src, "jpg", t(" (leggera)"))
+            su_bianco(im).save(out, "JPEG", quality=lv["jpg"], optimize=True, progressive=True)
         troppo_grande(src, out)
         return [out]
     if key == "r50":
@@ -348,18 +418,18 @@ def modifica_immagine(src, key):
         return [salva_come_originale(im, src, " (50%)")]
     if key == "r1920":
         if max(im.size) <= 1920:
-            raise RuntimeError("è già più piccola di 1920 px")
+            raise RuntimeError(t("è già più piccola di 1920 px"))
         im.thumbnail((1920, 1920), Image.LANCZOS)
         return [salva_come_originale(im, src, " (1920)")]
     if key == "quadrata":
         im = ImageOps.fit(im, (1080, 1080), Image.LANCZOS)
-        return [salva_come_originale(im, src, " (quadrata)")]
+        return [salva_come_originale(im, src, t(" (quadrata)"))]
     if key == "dritta":
         # exif_transpose l'ha gia' raddrizzata
-        return [salva_come_originale(im, src, " (dritta)")]
+        return [salva_come_originale(im, src, t(" (dritta)"))]
     gradi = {"destra": Image.Transpose.ROTATE_270, "sinistra": Image.Transpose.ROTATE_90,
              "r180": Image.Transpose.ROTATE_180}[key]
-    return [salva_come_originale(im.transpose(gradi), src, " (ruotata)")]
+    return [salva_come_originale(im.transpose(gradi), src, t(" (ruotata)"))]
 
 
 def converti_immagine(src, key):
@@ -400,9 +470,10 @@ def converti_pdf(src, key):
         return pdf_in_word(src)
     doc = apri_pdf(src)
     if key == "leggero":
-        out = uscita(src, "pdf", " (leggero)")
+        out = uscita(src, "pdf", t(" (leggero)"))
         try:
-            doc.rewrite_images(dpi_threshold=160, dpi_target=130, quality=70)
+            lv = livello()
+            doc.rewrite_images(dpi_threshold=lv["pdf_dpi"] + 30, dpi_target=lv["pdf_dpi"], quality=lv["pdf_q"])
         except Exception:
             pass  # PDF senza immagini: si guadagna solo dalla compressione
         try:
@@ -418,7 +489,7 @@ def converti_pdf(src, key):
         for page in doc:
             page.set_rotation((page.rotation + delta) % 360)
             LAVORO.parte((page.number + 1) / len(doc) * 0.8)
-        out = uscita(src, "pdf", " (ruotato)")
+        out = uscita(src, "pdf", t(" (ruotato)"))
         doc.save(out, garbage=3, deflate=True)
         return [out]
     if key == "txt":
@@ -443,7 +514,7 @@ def converti_pdf(src, key):
             for o in outs:  # niente pagine a meta': tolgo quelle gia' create di questo PDF
                 os.remove(o)
             raise
-        suff = "" if len(doc) == 1 else f" - pagina {i + 1}"
+        suff = "" if len(doc) == 1 else t(" - pagina {n}", n=i + 1)
         out = uscita(src, key, suff)
         pix = page.get_pixmap(dpi=170)
         if key == "jpg":
@@ -459,9 +530,9 @@ def apri_pdf(src):
     try:
         doc = pymupdf.open(src)
     except Exception as e:
-        raise RuntimeError("PDF danneggiato o non leggibile") from e
+        raise RuntimeError(t("PDF danneggiato o non leggibile")) from e
     if doc.needs_pass:
-        raise RuntimeError("PDF protetto da password: aprilo, togli la password e riprova")
+        raise RuntimeError(t("PDF protetto da password: aprilo, togli la password e riprova"))
     return doc
 
 
@@ -536,7 +607,7 @@ def unisci_pdf(files):
             su_bianco(ImageOps.exif_transpose(Image.open(f))).save(buf, "PDF", resolution=150)
             with pymupdf.open("pdf", buf.getvalue()) as d:
                 out_doc.insert_pdf(d)
-    nome = "Immagini unite" if all(categoria(f) == "immagine" for f in files) else "PDF unito"
+    nome = t("Immagini unite") if all(categoria(f) == "immagine" for f in files) else t("PDF unito")
     out = percorso_libero(cartella_per(files[0]), nome, "pdf")
     out_doc.save(out, garbage=3, deflate=True)
     return [out]
@@ -556,11 +627,16 @@ FFMPEG_ARGS = {
     "m4a": ["-vn", "-c:a", "aac", "-b:a", "192k"],
     "aac": ["-vn", "-c:a", "aac", "-b:a", "192k"],
 }
-# "leggero": video al massimo 1280 px (va bene per WhatsApp e email), audio MP3 a 96 kbps
-LEGGERO_VIDEO = ["-vf", "scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
-                 "-c:v", "libx264", "-preset", "medium", "-crf", "28", "-pix_fmt", "yuv420p",
-                 "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"]
-LEGGERO_AUDIO = ["-vn", "-c:a", "libmp3lame", "-b:a", "96k"]
+def argomenti_leggero(video):
+    """Video al massimo 1280 px (livello medio: va bene per WhatsApp e email), audio MP3."""
+    lv = livello()
+    if not video:
+        return ["-vn", "-c:a", "libmp3lame", "-b:a", lv["audio"]]
+    l = lv["video_lato"]
+    return ["-vf", f"scale=w='min({l},iw)':h='min({l},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+            "-c:v", "libx264", "-preset", "medium", "-crf", str(lv["crf"]), "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "96k" if lv["audio"] != "64k" else "64k", "-movflags", "+faststart"]
+
 
 
 def esamina_media(ff, src):
@@ -578,18 +654,18 @@ def esamina_media(ff, src):
 def converti_ffmpeg(src, key):
     ff = trova_ffmpeg()
     if not ff:
-        raise RuntimeError("manca ffmpeg: reinstalla il Convertitore")
+        raise RuntimeError(t("manca ffmpeg: reinstalla il Convertitore"))
     if key == "leggero":
         video = categoria(src) == "video"
-        out = uscita(src, "mp4" if video else "mp3", " (leggero)")
-        argomenti = LEGGERO_VIDEO if video else LEGGERO_AUDIO
+        out = uscita(src, "mp4" if video else "mp3", t(" (leggero)"))
+        argomenti = argomenti_leggero(video)
     else:
         out = uscita(src, key)
         argomenti = FFMPEG_ARGS[key]
     durata, ha_audio, ha_video = esamina_media(ff, src)
     solo_audio = "-vn" in argomenti
     if solo_audio and not ha_audio and (ha_video or durata):
-        raise RuntimeError("questo video non contiene audio")
+        raise RuntimeError(t("questo video non contiene audio"))
     cmd = [ff, "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-y", "-i", src, *argomenti, out]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                             text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
@@ -668,7 +744,7 @@ def converti_office(src, key, cat):
     except Exception as e:
         LAVORO.controlla()
         if scaduto.is_set():
-            raise RuntimeError("Office non risponde: conversione interrotta dopo 3 minuti") from e
+            raise RuntimeError(t("Office non risponde: conversione interrotta dopo 3 minuti")) from e
         raise
     finally:
         fatto.set()
@@ -743,33 +819,33 @@ def messaggio(e):
     basso = testo.lower()
     nome = type(e).__name__
     if isinstance(e, FileNotFoundError):
-        return "file non trovato: è stato spostato o cancellato?"
+        return t("file non trovato: è stato spostato o cancellato?")
     if isinstance(e, PermissionError):
-        return "file in uso da un altro programma: chiudilo e riprova"
+        return t("file in uso da un altro programma: chiudilo e riprova")
     if isinstance(e, MemoryError):
-        return "file troppo grande per la memoria del PC"
+        return t("file troppo grande per la memoria del PC")
     if nome == "UnidentifiedImageError" or "cannot identify image" in basso:
-        return "immagine danneggiata o di un tipo non riconosciuto"
+        return t("immagine danneggiata o di un tipo non riconosciuto")
     if nome == "DecompressionBombError":
-        return "immagine troppo grande (oltre i limiti di sicurezza)"
+        return t("immagine troppo grande (oltre i limiti di sicurezza)")
     if nome == "com_error":
-        return "Office non è riuscito ad aprire il file (serve Microsoft Office installato)"
+        return t("Office non è riuscito ad aprire il file (serve Microsoft Office installato)")
     if testo.startswith("ffmpeg: "):
         dettaglio = basso
         if "does not contain any stream" in dettaglio or "matches no streams" in dettaglio:
-            return "il file non contiene la traccia richiesta (per esempio un video senza audio)"
+            return t("il file non contiene la traccia richiesta (per esempio un video senza audio)")
         if "invalid data" in dettaglio or "moov atom not found" in dettaglio or "could not find codec" in dettaglio:
-            return "file audio/video danneggiato o incompleto"
+            return t("file audio/video danneggiato o incompleto")
         if "no space left" in dettaglio:
-            return "spazio sul disco esaurito"
+            return t("spazio sul disco esaurito")
         if "permission denied" in dettaglio:
-            return "impossibile scrivere il file: cartella protetta o file aperto"
-        return "conversione audio/video non riuscita"
+            return t("impossibile scrivere il file: cartella protetta o file aperto")
+        return t("conversione audio/video non riuscita")
     if "no space left" in basso or getattr(e, "errno", None) == 28:
-        return "spazio sul disco esaurito"
+        return t("spazio sul disco esaurito")
     if isinstance(e, RuntimeError):
         return testo  # messaggi gia' scritti per l'utente
-    return "errore imprevisto (dettagli nel registro errori)"
+    return t("errore imprevisto (dettagli nel registro errori)")
 
 
 def converti(files, cat, key, avanzamento=None, lavoro=None):
@@ -1090,7 +1166,7 @@ def leggi_appunti():
     if isinstance(c, Image.Image):
         return "immagine", c
     if isinstance(c, list):
-        files = [f for f in c if isinstance(f, str) and os.path.isfile(f) and categoria(f)]
+        files = espandi([f for f in c if isinstance(f, str)])[0]
         if files:
             return "file", files
     return None
@@ -1149,6 +1225,7 @@ class App:
         self.stato = "attesa"
         self.files, self.cat, self.opz = [], None, []
         self.gruppo, self.appunti = None, None
+        self.tutti, self.ignorati = None, 0
         self.risultati = []
         self.spin = None
         self.lavoro = None
@@ -1397,7 +1474,7 @@ class App:
     def _ridisegna_stato(self):
         if self.stato == "attesa":
             self._attesa(False)
-        elif self.stato in ("ruota", "panoramica", "categoria"):
+        elif self.stato in ("ruota", "panoramica", "categoria", "tipi"):
             self._ruota()
 
     # -- ruota senza file (clic sulla sfera senza niente di selezionato)
@@ -1407,15 +1484,15 @@ class App:
             self.appunti = leggi_appunti() or False
         if self.appunti:
             # c'e' uno screenshot (o dei file copiati): fetta in piu' per convertirli subito
-            SOTTOTITOLI["appunti"] = "screenshot" if self.appunti[0] == "immagine" else f"{len(self.appunti[1])} file copiati"
+            SOTTOTITOLI["appunti"] = t("screenshot") if self.appunti[0] == "immagine" else t("{n} file copiati", n=len(self.appunti[1]))
             self.opz.append("appunti")
         self._ruota()
-        self._testi("Cosa converti?", "scegli un tipo, oppure\ntrascina qui il file")
+        self._testi(t("Cosa converti?"), t("scegli un tipo, oppure\ntrascina qui il file"))
 
     def _categoria(self, cat):
         self.stato, self.cat, self.opz, self.hover = "categoria", cat, list(DESTINAZIONI[cat]), None
         self._ruota()
-        self._testi(ETICHETTE["cat:" + cat].capitalize(), f"trascina qui\n{NOMI_TIPO[cat]}", "clic qui per tornare")
+        self._testi(ETICHETTE["cat:" + cat].capitalize(), t("trascina qui\n{cosa}", cosa=NOMI_TIPO[cat]), t("clic qui per tornare"))
 
     def _sorveglia(self):
         """Ruota senza file: resta aperta mentre trascini un file verso di lei,
@@ -1442,8 +1519,8 @@ class App:
         self.hover = None
         self.cv.configure(cursor="")
         self._attesa(False)
-        self._testi("Trascina qui\ni tuoi file", "immagini · video · audio\nPDF · Word · Excel",
-                    sotto="", piede="Rilascia uno o più file per vedere le conversioni")
+        self._testi(t("Trascina qui\ni tuoi file"), t("immagini · video · audio\nPDF · Word · Excel"),
+                    sotto="", piede=t("Rilascia uno o più file per vedere le conversioni"))
 
     def _ruota(self, spenta=False):
         key = ("ruota", tuple(self.opz), self.cat, self.hover, spenta)
@@ -1454,49 +1531,69 @@ class App:
             self.cache[key] = disegna_ruota(self.base, self.opz, colore, self.hover, spenta)
         self._mostra(self.cache[key])
 
-    def carica(self, files, nome=None):
+    def carica(self, files, nome=None, da_tipi=False):
         if self.stato == "lavoro":
             return
         self.nome_mostrato = nome
-        files = [f for f in files if os.path.isfile(f)]
+        if not da_tipi:
+            files, self.ignorati = espandi(files)
+            self.tutti = None
         if not files:
-            if POPUP:
-                self.root.after(10, self.chiudi)
-            else:
-                self.reset()
-            return
-        cat, opz = opzioni_per(files)
-        if not opz:
+            if not self.ignorati:  # niente da convertire (file spariti): chiudo e basta
+                self.root.after(10, self.chiudi) if POPUP else self.reset()
+                return
             if POPUP:
                 self.stato = "fatto"
                 self._attesa(False)
                 self.root.after(2500, self.chiudi)
             else:
                 self.reset()
-            if cat == "misto":
-                self._testi("File di tipo diverso", "Trascina file dello\nstesso tipo insieme", piede="Esc per ricominciare")
-            else:
-                ext = estensione(files[0]) or "?"
-                self._testi("Formato non supportato", f".{ext}", piede="Esc per ricominciare")
+            self._testi(t("Formato non supportato"), t("{n} file che non so convertire", n=self.ignorati),
+                        piede=t("Esc per ricominciare"))
             return
+        cats = {categoria(f) for f in files}
+        if len(cats) > 1:
+            self._tipi(files)
+            return
+        cat, opz = opzioni_per(files)
         self.files, self.cat, self.opz, self.principali, self.gruppo = files, cat, opz, opz, None
         self.stato, self.hover = "ruota", None
         self._ruota()
         self._testi_file()
 
+    def _tipi(self, files):
+        """File di tipi diversi (o una cartella): prima scegli quali convertire."""
+        self.tutti = files
+        conta = {}
+        for f in files:
+            conta[categoria(f)] = conta.get(categoria(f), 0) + 1
+        opz = [f"cat:{c}" for c in CATEGORIE if c in conta]
+        for c in conta:
+            SOTTOTITOLI[f"cat:{c}"] = t("{n} file", n=conta[c])
+        if "immagine" in conta and "pdf" in conta:
+            opz.append("unisci")  # foto e PDF tutti insieme in un PDF
+        self.files, self.cat, self.opz, self.gruppo = files, None, opz, None
+        self.stato, self.hover = "tipi", None
+        self._ruota()
+        extra = t("{n} non supportati, ignorati", n=self.ignorati) if self.ignorati else t("scegli cosa convertire")
+        self._testi(t("{n} file", n=len(files)), t("di tipi diversi"), extra,
+                    piede=t("Scegli un tipo  ·  Esc per annullare"))
+
     def _testi_file(self):
         files, cat = self.files, self.cat
-        tipo = "immagini e PDF" if cat == "unione" else cat
+        tipo = t("immagini e PDF") if cat == "unione" else NOMI_CAT.get(cat, cat)
         if len(files) == 1:
             nome = self.nome_mostrato or os.path.basename(files[0])
             a, b = accorcia(nome, 22), f"{tipo}  ·  {self._peso(files[0])}"
         else:
-            a, b = f"{len(files)} file", tipo
-        c = "clic qui per tornare" if self.gruppo else "scegli il formato"
+            a, b = t("{n} file", n=len(files)), tipo
+        c = t("clic qui per tornare") if self.gruppo or self.tutti else t("scegli il formato")
+        if not self.gruppo and not self.tutti and getattr(self, "ignorati", 0):
+            c = t("{n} non supportati, ignorati", n=self.ignorati)
         if self.gruppo:
             a = ETICHETTE[self.gruppo].capitalize()
-        self._testi(a, b, c, sotto=f"{len(self.opz)} conversioni possibili",
-                    piede="Clicca un formato  ·  Esc o tasto destro per annullare")
+        self._testi(a, b, c, sotto=t("{n} conversioni possibili", n=len(self.opz)),
+                    piede=t("Clicca un formato  ·  Esc o tasto destro per annullare"))
 
     @staticmethod
     def _peso(f):
@@ -1525,7 +1622,7 @@ class App:
 
     def _muovi(self, e):
         e.x, e.y = e.x / Z, e.y / Z
-        if self.stato in ("ruota", "panoramica", "categoria"):
+        if self.stato in ("ruota", "panoramica", "categoria", "tipi"):
             h = self._indice(e.x, e.y)
             if h != self.hover:
                 self.hover = h
@@ -1553,7 +1650,7 @@ class App:
             if centro:
                 self._panoramica()
             elif self._indice(e.x, e.y) is not None:
-                self._testi(self.etichetta_cat(), f"prima trascina qui\n{NOMI_TIPO[self.cat]}", "clic qui per tornare")
+                self._testi(self.etichetta_cat(), t("prima trascina qui\n{cosa}", cosa=NOMI_TIPO[self.cat]), t("clic qui per tornare"))
                 self.cv.itemconfigure(self.c1, fill="#fbbf24")
                 self._presenta() if POPUP else None
             elif math.hypot(e.x - CX, e.y - CY) > R_OUT + 30:
@@ -1571,6 +1668,22 @@ class App:
             elif centro and self.gruppo:
                 self.gruppo, self.opz, self.hover = None, self.principali, None
                 self._ruota()
+                self._testi_file()
+            elif centro and self.tutti:
+                self._tipi(self.tutti)  # torna alla scelta del tipo
+            elif math.hypot(e.x - CX, e.y - CY) > R_OUT + 30:
+                self.reset()
+        elif self.stato == "tipi":
+            i = self._indice(e.x, e.y)
+            if i is not None and self.opz[i] == "unisci":
+                self.files = [f for f in self.tutti if categoria(f) in ("immagine", "pdf")]
+                self.cat = "unione"
+                self._avvia("unisci")
+            elif i is not None:
+                scelta = self.opz[i][4:]
+                tutti = self.tutti
+                self.carica([f for f in tutti if categoria(f) == scelta], da_tipi=True)
+                self.tutti = tutti
                 self._testi_file()
             elif math.hypot(e.x - CX, e.y - CY) > R_OUT + 30:
                 self.reset()
@@ -1594,11 +1707,12 @@ class App:
         # screenshot: lo salvo come BMP temporaneo, i file convertiti vanno sul Desktop
         cartella = os.path.join(os.environ.get("TEMP", cartella_desktop()), "Convertitore")
         os.makedirs(cartella, exist_ok=True)
-        nome = time.strftime("Appunti %Y-%m-%d %H.%M.%S")
+        nome = t("Appunti") + time.strftime(" %Y-%m-%d %H.%M.%S")
         tmp = os.path.join(cartella, nome + ".bmp")
         su_bianco(valore).save(tmp, "BMP")
-        CARTELLA_USCITA = cartella_desktop()
-        self.carica([tmp], nome="Immagine dagli appunti")
+        fissa = IMP.get("cartella")
+        CARTELLA_USCITA = fissa if fissa and os.path.isdir(fissa) else cartella_desktop()
+        self.carica([tmp], nome=t("Immagine dagli appunti"))
 
     def etichetta_cat(self):
         return ETICHETTE["cat:" + self.cat].capitalize()
@@ -1611,13 +1725,13 @@ class App:
         self._ruota(spenta=True)
         self.etichetta = ETICHETTE.get(key, key.upper())
         if key in DESCRIZIONI:
-            self._testi(DESCRIZIONI[key], "", "", piede="Clic al centro o Esc per annullare")
+            self._testi(DESCRIZIONI[key], "", "", piede=t("Clic al centro o Esc per annullare"))
         else:
-            self._testi(f"Converto in {self.etichetta}…", "", "", piede="Clic al centro o Esc per annullare")
+            self._testi(t("Converto in {cosa}…", cosa=self.etichetta), "", "", piede=t("Clic al centro o Esc per annullare"))
         self.azione = key in AZIONI
         self.angolo = 0
         self.lavoro = Lavoro(len(self.files))
-        self.cv.itemconfigure(self.c3, text="clic qui per annullare")
+        self.cv.itemconfigure(self.c3, text=t("clic qui per annullare"))
         self._impila()
         self._ultimo_testo = None
         self._gira()
@@ -1628,7 +1742,7 @@ class App:
         if self.stato != "lavoro" or self.lavoro is None or self.lavoro.annulla.is_set():
             return
         self.lavoro.ferma()
-        self._testi("Annullo…", "", "")
+        self._testi(t("Annullo…"), "", "")
         self.cv.itemconfigure(self.c1, fill="#fbbf24")
         self._presenta() if POPUP else None
 
@@ -1685,30 +1799,30 @@ class App:
         annullato = self.lavoro is not None and self.lavoro.annulla.is_set()
         spostati = self.lavoro is not None and self.lavoro.spostati
         if annullato:
-            self._testi("Annullato", f"{len(outs)} file già pronti" if outs else "nessun file creato",
-                        "clicca qui per la cartella" if outs else "",
-                        piede="Clicca fuori o premi Esc per ricominciare")
+            self._testi(t("Annullato"), t("{n} file già pronti", n=len(outs)) if outs else t("nessun file creato"),
+                        t("clicca qui per la cartella") if outs else "",
+                        piede=t("Clicca fuori o premi Esc per ricominciare"))
             self.cv.itemconfigure(self.c1, fill="#fbbf24")
             self._presenta()
             if POPUP:
                 self.root.after(2200, self._chiudi_dopo)
         elif outs and not errori:
             n = len(outs)
-            self._testi("✓  Fatto", (f"{n} file pronti" if self.azione else f"{n} file {self.etichetta}") if n > 1
+            self._testi("✓  " + t("Fatto"), (t("{n} file pronti", n=n) if self.azione else t("{n} file {cosa}", n=n, cosa=self.etichetta)) if n > 1
                         else accorcia(os.path.basename(outs[0]), 24),
-                        "salvato sul Desktop:\ncartella protetta" if spostati else "clicca qui per\naprire la cartella",
-                        piede="Trascina altri file o clicca fuori per ricominciare")
+                        t("salvato sul Desktop:\ncartella protetta") if spostati else t("clicca qui per\naprire la cartella"),
+                        piede=t("Trascina altri file o clicca fuori per ricominciare"))
             self.cv.itemconfigure(self.c1, fill="#4ade80")
             self._presenta()
             if POPUP:
                 self.root.after(2500, self._chiudi_dopo)
         else:
-            msg = errori[0] if errori else "nessun file creato"
+            msg = errori[0] if errori else t("nessun file creato")
             if len(errori) > 1:
-                msg += f"\n(+ altri {len(errori) - 1})"
-            self._testi("⚠  Errore" if not outs else f"⚠  {len(errori)} errori", accorcia(msg, 110),
-                        "clicca qui per la cartella" if outs else "",
-                        piede="Clicca fuori o premi Esc per ricominciare")
+                msg += t("\n(+ altri {n})", n=len(errori) - 1)
+            self._testi("⚠  " + (t("Errore") if not outs else t("{n} errori", n=len(errori))), accorcia(msg, 110),
+                        t("clicca qui per la cartella") if outs else "",
+                        piede=t("Clicca fuori o premi Esc per ricominciare"))
             self.cv.itemconfigure(self.c1, fill="#fb7185")
             self._presenta()
 
@@ -1762,6 +1876,10 @@ def raccogli(files):
 def main():
     global POPUP
     files = sys.argv[1:]
+    if files == ["--impostazioni"]:
+        import impostazioni as finestra_imp
+        finestra_imp.finestra()
+        return
     if files == ["--ruota"]:
         files = []
         POPUP = True
